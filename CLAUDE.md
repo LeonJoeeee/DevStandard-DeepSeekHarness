@@ -98,6 +98,12 @@ HARD_EDGE_SHARD=0/2 python3 .github/test-hard-edges.py   # One zero-based role w
 python3 .github/check-agents.py
 python3 .github/check-agents.py --write
 
+# The dsh bundle: `package.json` + `cordis.patch.yml` validation, then a live run against a
+# local deterministic OpenAI-compatible endpoint proving the root request carries
+# reference/orchestrator.md and a spawned child's does not. Needs an installed `dsh`, Node and
+# pnpm; not in CI yet (the port's dsh runtime job adopts it, ADR 0064).
+python3 .github/test-dsh-bundle.py
+
 # 1. Per-artifact hook delivery: inline, the exact byte boundary of one part, multi-part
 #    reconstruction, the degraded read, missing source, lifecycle sources, unsupported environments
 python3 .github/test-session-start.py
