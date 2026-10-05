@@ -1,0 +1,13 @@
+# The DevStandard bundle patch.
+#
+# One row, applied over the dsh base profile: the plugin that delivers the
+# orchestrator role to the root agent's session. It names this bundle's own
+# package (`devstandard-dsh`), whose `main` (`index.js`) exports `apply`.
+#
+# Ids are unique against the base and the shipped bundles. Row order carries no
+# load semantics (activation is service-availability driven), so the row is
+# appended after the base and headless rows without a placement claim.
+
+- insert:
+    - id: devstandard-role-delivery
+      name: 'devstandard-dsh'
