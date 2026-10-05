@@ -20,10 +20,18 @@ Issue #6's done-check, in two parts:
      - the reviewer child's request carries `reference/code-review-prompt.md`'s
        exact bytes, its tool catalog holds no write tool, and a write call the
        endpoint scripts is rejected;
-     - both children's requests carry the bundle's one model anchor.
+     - both children's requests carry the bundle's one model anchor;
+     - the guard refuses each role's own word through `tools/pre-execute`, names
+       the role and the word in the reminder, and admits an ordinary command --
+       the root's `gh pr merge`, the worker's `merge` and default-branch `push`,
+       the reviewer's `gh api` write flag (issue #8);
+     - a child maps to its own role, not the worker-and-reviewer union: a worker's
+       `echo gh -X POST` is admitted and a reviewer's `echo merge` is admitted.
 
-Probe 2 item 2 (issue #6) is answered by (2): `subagent/start` carries the child
-id but not the row's persona or label, so it cannot map a child to its role.
+Probe 2 item 2 (issue #6): `subagent/start` carries the child id but not the row's
+persona or label, so it cannot map a child to its role; the child's own durable
+`subagent/descriptor` does carry the row's `persona`, so (2) resolves the role from
+that and the guard uses the exact per-role rules, not the union fallback.
 
 Requires `dsh` on PATH, Node and pnpm (the dsh plugin manager shells out to
 pnpm). No network: the endpoint is local and the profile links the bundle.
@@ -45,6 +53,10 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.dont_write_bytecode = True  # importing the engine must not litter scripts/__pycache__
+sys.path.insert(0, str(ROOT / "scripts"))
+from hard_edges import command_refusal  # noqa: E402 -- the policy the dsh guard ports
+
 ORCHESTRATOR = ROOT / "reference" / "orchestrator.md"
 WORKER_PAGE = ROOT / "reference" / "worker.md"
 REVIEWER_PAGE = ROOT / "reference" / "code-review-prompt.md"
@@ -57,6 +69,23 @@ WORKER_MARKER = "DEVSTANDARD-WORKER-TASK-5c1f9a"
 REVIEWER_MARKER = "DEVSTANDARD-REVIEWER-TASK-7d2e4b"
 TASK = "Delegate a short task to the worker, then to the reviewer, then answer."
 WRITE_TOOLS = {"write", "edit", "str_replace_editor"}
+
+# Ordinary commands the endpoint scripts each agent to run; their stdout proves the guard
+# admitted them. The two `echo gh -X POST` / `echo merge` commands are the split proof: the
+# reviewer's flag rule and the worker's word rule would each refuse them under the union, so
+# admitting them shows the child took its own role and not the fallback.
+ROOT_OK = "DEVSTANDARD-ROOT-OK-9a1c"
+WORKER_OK = "DEVSTANDARD-WORKER-OK-4f2d"
+REVIEWER_OK = "DEVSTANDARD-REVIEWER-OK-7b3e"
+ROOT_ALLOWED = f"echo {ROOT_OK}"
+WORKER_ALLOWED = f"echo {WORKER_OK}"
+REVIEWER_ALLOWED = f"echo {REVIEWER_OK}"
+WORKER_WORD = "git merge upstream"
+WORKER_PUSH = "git push origin main"
+REVIEWER_WRITE = "gh api -X POST /repos/o/r/issues/1/comments -f body=x"
+ROOT_WORD = "gh pr merge 12"
+WORKER_SPLIT_PROOF = f"echo gh -X POST {WORKER_OK}"
+REVIEWER_SPLIT_PROOF = f"echo merge {REVIEWER_OK}"
 
 
 def run(cmd, *, env=None, cwd=None, timeout=180, capture=True):
@@ -143,6 +172,11 @@ def validate(repo, profile_dir, dsh_bin):
     code, _, err = run([sys.executable, repo / ".github" / "check-dsh-bundle.py"])
     require(code == 0, f"the bundle gate failed: {err[-800:]}")
 
+    # The guard gate owns the port fidelity — `guard.js` against `scripts/hard_edges.py`
+    # — so the live refusals below rest on an engine that cannot have drifted.
+    code, _, err = run([sys.executable, repo / ".github" / "check-dsh-guard.py"])
+    require(code == 0, f"the guard gate failed: {err[-800:]}")
+
     # Resolution is the one static claim the gate cannot make: it needs the dsh
     # installation and (in a composed profile) the profile's own node_modules.
     rows = yaml.safe_load((repo / "cordis.patch.yml").read_text())
@@ -173,6 +207,11 @@ class FakeOpenAI:
 
     def __init__(self):
         self.requests = []
+        self.calls = 0
+        # A continuable child runs detached, so the root's final step waits on these before
+        # it answers: otherwise the turn ends and the harness tears the children down.
+        self.worker_done = threading.Event()
+        self.reviewer_done = threading.Event()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -231,28 +270,65 @@ class FakeOpenAI:
                             return True
                     return False
 
+                # `n` is the number of tool results already in this agent's history: the step
+                # each agent is on. The sequences below script the root, the worker child and
+                # the reviewer child, one tool call per step, ending in a final text.
+                n = len(tool_roles)
                 if not tools:
                     return self._text("probe title")
                 if user_marker(WORKER_MARKER):
+                    if n == 0:
+                        return self._bash(WORKER_WORD)
+                    if n == 1:
+                        return self._bash(WORKER_PUSH)
+                    if n == 2:
+                        return self._bash(WORKER_SPLIT_PROOF)
+                    if n == 3:
+                        return self._bash(WORKER_ALLOWED)
+                    outer.worker_done.set()
                     return self._text("worker-final")
                 if user_marker(REVIEWER_MARKER):
-                    if tool_roles:
-                        return self._text("reviewer-final")
-                    # Call a tool the reviewer row's filter removed; the harness must reject it.
-                    return self._tool_call("write", json.dumps({"file_path": "/tmp/probe", "content": "x"}))
-                if len(tool_roles) == 0:
+                    if n == 0:
+                        return self._bash(REVIEWER_WRITE)
+                    if n == 1:
+                        return self._bash(REVIEWER_SPLIT_PROOF)
+                    if n == 2:
+                        return self._bash(REVIEWER_ALLOWED)
+                    if n == 3:
+                        # Call a tool the reviewer row's filter removed; the harness must reject it.
+                        return self._tool_call("write", json.dumps({"file_path": "/tmp/probe", "content": "x"}))
+                    outer.reviewer_done.set()
+                    return self._text("reviewer-final")
+                if n == 0:
+                    return self._bash(ROOT_WORD)
+                if n == 1:
+                    return self._bash(ROOT_ALLOWED)
+                if n == 2:
                     return self._tool_call("worker", json.dumps({
                         "description": "spawn the worker",
                         "prompt": f"do the worker task {WORKER_MARKER}",
-                        "run_in_background": False,
+                        "run_in_background": True,
                     }))
-                if len(tool_roles) == 1:
+                if n == 3:
                     return self._tool_call("reviewer", json.dumps({
                         "description": "spawn the reviewer",
                         "prompt": f"do the reviewer task {REVIEWER_MARKER}",
-                        "run_in_background": False,
+                        "run_in_background": True,
                     }))
+                # Both children were delegated continuable, so they run detached. Hold the
+                # root's last step until each has reached its final text; a child that stalls
+                # fails the run below rather than silently vanishing with the root's turn.
+                if not outer.worker_done.wait(120):
+                    print("  WARNING: the worker child did not finish before the root's last step")
+                if not outer.reviewer_done.wait(120):
+                    print("  WARNING: the reviewer child did not finish before the root's last step")
                 return self._text("root-final")
+
+            def _bash(self, command):
+                # dsh's `bash` schema requires a `description` as well as `command`; the guard
+                # reads only `exec.arguments.command`, so the description is inert here.
+                return self._tool_call("bash", json.dumps(
+                    {"command": command, "description": "Probe one command for the role guard"}))
 
             def _start(self):
                 self.send_response(200)
@@ -280,9 +356,14 @@ class FakeOpenAI:
                 self.wfile.flush()
 
             def _tool_call(self, name, arguments):
+                # One id per emitted call: the same tool is scripted several times per agent
+                # (the guard's refused and allowed `bash` calls), and a repeated id would let
+                # the harness mis-resolve the second call against the first.
+                outer.calls += 1
+                call_id = f"call_probe_{outer.calls}_{name}"
                 self._start()
                 self._chunk({"role": "assistant", "tool_calls": [
-                    {"index": 0, "id": f"call_probe_{name}", "type": "function",
+                    {"index": 0, "id": call_id, "type": "function",
                      "function": {"name": name, "arguments": ""}}]})
                 self._chunk({"tool_calls": [{"index": 0, "function": {"arguments": arguments}}]})
                 self._chunk({}, "tool_calls")
@@ -320,6 +401,26 @@ def is_child(request, marker):
         if message.get("role") == "user" and marker in json.dumps(message.get("content")):
             return True
     return False
+
+
+def message_text(content):
+    """The plain text of one message's content, whether a string or a list of blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(block.get("text", "") if isinstance(block, dict) else str(block)
+                         for block in content)
+    return json.dumps(content)
+
+
+def tool_texts(requests, indices):
+    """Every tool-result text an agent's own requests carry, in order — what the model read back."""
+    out = []
+    for i in indices:
+        for message in requests[i].get("messages") or []:
+            if message.get("role") == "tool":
+                out.append(message_text(message.get("content")))
+    return out
 
 
 def probe(repo, dsh_bin, keep):
@@ -460,24 +561,68 @@ def analyse(requests, events):
 
     # The write call the endpoint scripted for the reviewer was rejected. The child's
     # rejection is not in the root's event stream, so read it from the reviewer child's
-    # own follow-up request: its tool result must report a failure, not a written file.
-    failures = []
-    for i in reviewer_child:
-        for message in requests[i].get("messages") or []:
-            if message.get("role") == "tool":
-                failures.append(json.dumps(message.get("content")))
-    require(failures, "the reviewer's `write` call produced no tool result to inspect")
+    # own follow-up request: its tool result must report a failure, not a written file. The
+    # reviewer's other tool results — the guard refusals and the allowed `echo`s — are set
+    # aside by their markers, leaving the `write` outcome.
+    write_results = [text for text in tool_texts(requests, reviewer_child)
+                     if "role refuses" not in text and REVIEWER_OK not in text]
+    require(write_results, "the reviewer's `write` call produced no tool result to inspect")
     require(all("error" in text.lower() or "unknown" in text.lower() or "denied" in text.lower()
-                or "not " in text.lower() for text in failures),
-            f"the reviewer's `write` call was not reported as rejected: {failures}")
-    print(f"  OK: the reviewer's `write` call was rejected: {failures[0][:200]}")
+                or "not " in text.lower() for text in write_results),
+            f"the reviewer's `write` call was not reported as rejected: {write_results}")
+    print(f"  OK: the reviewer's `write` call was rejected: {write_results[0][:200]}")
 
-    # Probe 2 item 2: `subagent/start`'s payload is {runId, provider, id, local} — the
-    # child id, but no persona and no label. The command that shows it is the type
-    # source below; the guard lane therefore keeps its union fallback.
-    print('  Probe 2 item 2: `subagent/start` carries the child id '
-          '(SubagentRunInfo {runId, provider, id, local}) but neither the row persona nor its '
-          'label, so it cannot map a child to its role.')
+    # The guard (issue #8). Every role is refused its own word through `tools/pre-execute`
+    # and admitted an ordinary command; the refusal is the reminder the model reads back,
+    # naming the role and the word and offering what the role does instead. The engine that
+    # decides is the one `guard.js` ports, so its reminder is the expected text.
+    root_texts = "\n".join(tool_texts(requests, root))
+    worker_texts = "\n".join(tool_texts(requests, worker_child))
+    reviewer_texts = "\n".join(tool_texts(requests, reviewer_child))
+    for label, texts, cases, allowed in (
+        ("root", root_texts, [("orchestrator", ROOT_WORD)], ROOT_ALLOWED),
+        ("worker", worker_texts, [("worker", WORKER_WORD), ("worker", WORKER_PUSH)], WORKER_ALLOWED),
+        ("reviewer", reviewer_texts, [("reviewer", REVIEWER_WRITE)], REVIEWER_ALLOWED),
+    ):
+        for role, command in cases:
+            reason = command_refusal(role, command)
+            require(reason, f"the {label} case {command!r} states no refusal to expect")
+            require(f"Error: {reason}" in texts,
+                    f"the {label} was not refused {command!r}; expected its tool result to read "
+                    f"{reason!r}")
+            print(f"  OK: {label} refused {command!r} with: {reason}")
+        require("role refuses a " in texts and "Instead," in texts and "Read " in texts,
+                f"the {label} refusal is a wall, not the reminder ADR 0062 prescribes")
+        require(allowed.split()[1] in texts,
+                f"the {label}'s ordinary command {allowed!r} was not admitted")
+        print(f"  OK: {label} was admitted the ordinary command {allowed!r}")
+
+    # The child tier is the exact per-role list, not the worker-and-reviewer union ADR 0062's
+    # amendment named as a fallback: each child ran a command the *other* role's rule would
+    # refuse, and it was admitted. Probe 2 item 2 (issue #6) removed the need for the union by
+    # yielding the child's own row persona (see the mapping note below).
+    worker_split = command_refusal("reviewer", WORKER_SPLIT_PROOF)
+    reviewer_split = command_refusal("worker", REVIEWER_SPLIT_PROOF)
+    require(worker_split and worker_split not in worker_texts,
+            "the worker was refused a reviewer-only word: the child tier is the union, not the worker's list")
+    require(f"gh -X POST {WORKER_OK}" in worker_texts,
+            "the worker's split-proof command did not run, so it does not prove the split")
+    require(reviewer_split and reviewer_split not in reviewer_texts,
+            "the reviewer was refused a worker-only word: the child tier is the union, not the reviewer's list")
+    require(f"merge {REVIEWER_OK}" in reviewer_texts,
+            "the reviewer's split-proof command did not run, so it does not prove the split")
+    print("  OK: each child carries its own role's list, not the worker-and-reviewer union")
+
+    # How a child maps to its role (done-check 5). `subagent/start`'s payload is
+    # {runId, provider, id, local} — the child id, no persona and no label — so it cannot map
+    # a child to its row. The child's own durable `subagent/descriptor` does carry the row's
+    # `persona`; the command that shows the field is
+    #   sed -n '/ContinuableSubagentDescriptorData/,/^}/p' \
+    #     "$(dirname "$(dirname "$(readlink -f "$(which dsh)")")")/node_modules/@deepseek-ai/dsh-subagent/lib/types/descriptor.d.ts"
+    # and `index.js` matches that persona against reference/worker.md and
+    # reference/code-review-prompt.md. The split proof above is that mapping working live.
+    print("  Mapping (probe 2 item 2): the child's own `subagent/descriptor` carries the row "
+          "`persona`, so the guard takes the exact per-role rules proved above")
 
 
 def main():
@@ -500,7 +645,8 @@ def main():
     analyse(requests, events)
 
     print("\nRESULT: bundle validates; both role tools are callable, each child carries its own "
-          "page and the right tool surface, and both run on the one anchor")
+          "page and the right tool surface, both run on the one anchor, and the guard refuses "
+          "each role's own word while admitting ordinary work")
 
 
 if __name__ == "__main__":

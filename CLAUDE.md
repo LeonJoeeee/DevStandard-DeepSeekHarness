@@ -105,6 +105,11 @@ python3 .github/check-agents.py --write
 python3 .github/check-dsh-bundle.py
 python3 .github/check-dsh-bundle.py --write
 
+# The dsh guard: runs the ported JS engine in guard.js and scripts/hard_edges.py over one
+# corpus and fails if a decision differs, so the dsh carrier cannot drift from the policy.
+# Needs `node` (the bundle is a Node package); in CI.
+python3 .github/check-dsh-guard.py
+
 # The dsh bundle end to end: the gate above, then a live run against a local deterministic
 # OpenAI-compatible endpoint proving the root carries reference/orchestrator.md, the `worker`
 # and `reviewer` children carry their own page and tool surface, and both run on the anchor.
