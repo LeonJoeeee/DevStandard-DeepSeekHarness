@@ -1,6 +1,6 @@
 # DevStandard, delivered natively for DeepSeek Harness
 
-Status: draft
+Status: accepted
 
 ## Problem & context
 
@@ -185,7 +185,11 @@ Machine-judgeable, and the issue's done-check derives from it:
    with the evidence recorded on the issues. Run in an interactive profile under `workspace-write`
    with approvals answered by the human; the worker is in-process and inherits the session's
    permissions.
-4. **No Codex residue:** a grep over shipped docs and scripts finds no Codex-dispatch reference.
+4. **No Codex residue:** a grep over the shipped pages and scripts, **the ADR log excluded**,
+   finds no Codex-dispatch reference. The exclusion is the point, not a convenience: the log
+   ships inside the bundle and recording Codex's removal is what this port asks it to do, so a
+   grep that counts its own record proves nothing. Issue #1's Done-check wording is read the
+   same way.
 5. **CI green** on the port PRs, including the bundle gate and the dsh runtime job.
 
 ## Failure detection & rollback

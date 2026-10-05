@@ -18,7 +18,7 @@ max` and no opus/sonnet analogue to name.
 ## Decision
 
 One anchor. The two subagent rows carry
-`agentOptions: {model: <the anchored model>, reasoningEffort: max}` in the bundle's `cordis.patch.yml`,
+`agentOptions: {model: deepseek-v4.1-flash, reasoningEffort: max}` in the bundle's `cordis.patch.yml`,
 and that is the only site. There are no tiers, no per-kind routing, and no helper table: every
 dispatched role, the reviewer included, takes the same route.
 
