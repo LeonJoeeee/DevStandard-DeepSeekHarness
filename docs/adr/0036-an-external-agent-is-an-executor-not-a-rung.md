@@ -2,7 +2,7 @@
 
 Status: Amended by 0050 (2026-09-09). Accepted (2026-08-25). Amended by 0045 (2026-09-05). Amended by 0038 (2026-08-26). Amended by 0040 (2026-08-26). Amended by 0047 (2026-09-07). Amended (2026-09-07). Amended (2026-09-11). Extends 0008 (the ladder's executors; the rungs, run sizing and
 rationing are unchanged). Cites 0024 without amending it: the cap and the tier names stand for every
-agent this method spawns through its own harness, and do not reach a process it does not spawn. Amended by 0056 (2026-09-11). Amended by 0063 (2026-09-29).
+agent this method spawns through its own harness, and do not reach a process it does not spawn. Amended by 0056 (2026-09-11). Amended by 0063 (2026-09-29). Amended by 0065 (2026-10-05).
 
 ## Context
 
@@ -165,3 +165,8 @@ the 0045 block's exclusion applies again. Codex is the CLI executor a Claude Cod
 invokes, under its OS sandbox; the unavailable-executor fallback still keeps the gate's properties
 and never lowers them. `reference/orchestrator.md`'s Dispatching to an executor section owns these
 bindings.
+
+**Amendment (2026-10-05, see 0065):** the executor set narrows to one. This repository dispatches to
+the host's own subagent and to nothing else, so there is no external agent to choose between; the
+never-lower-the-gate fallback for an unavailable executor stands, because a gate whose executor is
+missing is still blocked rather than reduced.

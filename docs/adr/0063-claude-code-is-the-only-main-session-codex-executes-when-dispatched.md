@@ -1,6 +1,6 @@
 # 0063 — Claude Code is the only main session; Codex executes when dispatched
 
-Status: Accepted (2026-09-29). Supersedes 0056. Amends 0006, 0007, 0008, 0011, 0015, 0016, 0018,
+Status: Superseded by 0064 (2026-10-05). Originally Accepted (2026-09-29). Supersedes 0056. Amends 0006, 0007, 0008, 0011, 0015, 0016, 0018,
 0019, 0022, 0024, 0035, 0036, 0038, 0039, 0040, 0045, 0046, 0047, 0049, 0051, 0052, 0059, 0060 and
 0061 (their live Codex-host, delivery, routing and version-exemption clauses).
 

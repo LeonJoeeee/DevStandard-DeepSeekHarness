@@ -1,7 +1,7 @@
 # 0062 — A guard word must name an irreversible act nothing else stops
 
 Status: Accepted (2026-09-20). Amends 0051 (the role lists, the re-spelling detour) and 0052
-(release is not the hook's business). Amended (2026-09-20).
+(release is not the hook's business). Amended (2026-09-20). Amended by 0064 (2026-10-05).
 
 ## Context
 
@@ -111,3 +111,10 @@ open instead: the call is admitted and one line on stderr names the error. The t
 worker's default-branch `push` are untouched, and `.github/test-hard-edges.py` gains a case that
 injects an exception into the decision and asserts admission with that warning. See 0051's block of
 the same date for the reasoning.
+
+**Amendment (2026-10-05, see 0064):** the three words and the worker's default-branch `push` stand;
+the carrier changes. The guard rides the host's `tools/pre-execute`, reading the same command text,
+with dsh's tool names in place of the old ones. One widening is named rather than chased: the subagent
+row that spawned a child is not carried onto it, so the guard's child tier applies the
+worker-and-reviewer union until a child can be mapped to its row. A reviewer's write refusal is
+unaffected — the row's `toolFilter` carries it hard, not a word.

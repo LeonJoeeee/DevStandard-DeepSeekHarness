@@ -1,6 +1,6 @@
 # 0050 — Route model and effort by kind of work, without a tier cap
 
-Status: Accepted (2026-09-09). Amends 0024 (the tier cap and mechanical-only downgrade rule) and 0040 (its restatement of the cap and uniform routing); amends 0008, 0036, 0039 and 0047 (their routing statements). Amended by 0056 (2026-09-11). Amended (2026-09-19). Amended (2026-09-20). Amended (2026-09-21). Amended (2026-09-23). Amended (2026-09-29).
+Status: Superseded by 0066 (2026-10-05). Originally Accepted (2026-09-09). Amends 0024 (the tier cap and mechanical-only downgrade rule) and 0040 (its restatement of the cap and uniform routing); amends 0008, 0036, 0039 and 0047 (their routing statements). Amended by 0056 (2026-09-11). Amended (2026-09-19). Amended (2026-09-20). Amended (2026-09-21). Amended (2026-09-23). Amended (2026-09-29).
 
 ## Context
 

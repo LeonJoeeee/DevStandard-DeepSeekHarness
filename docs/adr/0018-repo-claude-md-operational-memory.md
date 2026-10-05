@@ -1,6 +1,6 @@
 # 0018 — A repo-root CLAUDE.md joins the doc set: operational memory for clean-context workers
 
-Status: Accepted (2026-07-16). Amended by 0045 (2026-09-05). Amended (2026-07-25). Amended by 0030. Amended (2026-08-13). Amended (2026-08-25). Amended by 0037 (2026-08-25). Amended by 0038 (2026-08-26). Amended by 0039 (2026-08-26). Amended by 0041 (2026-08-28). Amended by 0042 (2026-08-31). Amended (2026-09-07). Amended by 0056 (2026-09-11). Amended by 0063 (2026-09-29).
+Status: Accepted (2026-07-16). Amended by 0045 (2026-09-05). Amended (2026-07-25). Amended by 0030. Amended (2026-08-13). Amended (2026-08-25). Amended by 0037 (2026-08-25). Amended by 0038 (2026-08-26). Amended by 0039 (2026-08-26). Amended by 0041 (2026-08-28). Amended by 0042 (2026-08-31). Amended (2026-09-07). Amended by 0056 (2026-09-11). Amended by 0063 (2026-09-29). Amended by 0064 (2026-10-05).
 
 ## Context
 
@@ -118,3 +118,9 @@ creation and write-back lane remain; `reference/repo-claude-md.md` owns this mem
 operational-memory file: the Claude Code orchestrator and every dispatched worker read it, a Codex
 worker explicitly, alongside a project's existing `AGENTS.md`. No managed block is installed in
 either file; `reference/repo-claude-md.md` owns the rule.
+
+**Amendment (2026-10-05, see 0064):** the instructions file is the host's. dsh reads `AGENTS.md` and
+`CLAUDE.md` in one chain, per agent, so the rule names the repo-root file the host reads rather than
+Claude Code's own; a dispatched worker receives the project's file exactly as before. `CLAUDE.md`
+remains a name that host reads, not one this method requires. `reference/repo-claude-md.md` owns the
+rule.

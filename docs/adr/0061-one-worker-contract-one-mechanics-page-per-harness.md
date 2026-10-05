@@ -1,6 +1,6 @@
 # 0061 — One worker contract, one mechanics page per harness
 
-Status: Accepted (2026-09-19). Amends 0056 (shared role sources) and 0060 (the definition body). Amended by 0063 (2026-09-29).
+Status: Accepted (2026-09-19). Amends 0056 (shared role sources) and 0060 (the definition body). Amended by 0063 (2026-09-29). Amended by 0064 (2026-10-05).
 
 **Scope: this ADR decides what the method ships.** It splits the worker role into a shared contract
 and one mechanics page per executor family (#409); `reference/worker.md`,
@@ -85,3 +85,7 @@ session and keeps the marked worker section, which dispatch appends for `--imple
 alone. There is no `codex-native` path and no Codex session-start delivery of the page;
 `.github/test-codex-native.py` is deleted, and `.github/test-codex-runtime.py` still proves the
 contract and the Codex section reach the child. The one-contract, one-mechanics-page split stands.
+
+**Amendment (2026-10-05, see 0064):** the shape stands, with one harness instead of two. The single
+mechanics page is `reference/harness-dsh.md`; `reference/harness-codex.md` is deleted and
+`reference/harness-claude.md` becomes that page, because this repository's host is dsh alone.
