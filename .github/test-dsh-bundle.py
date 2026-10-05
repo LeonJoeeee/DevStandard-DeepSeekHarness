@@ -1,22 +1,29 @@
 #!/usr/bin/env python3
 """Validate the DevStandard dsh bundle and prove its role delivery end to end.
 
-Issue #4's done-check, in two parts:
+Issue #6's done-check, in two parts:
 
-  1. Static validation of the bundle. `package.json`'s `dsh.bundle.patch`
-     resolves to a real file, its `files` list names only existing paths, and
-     every row in `cordis.patch.yml` declares only known patch fields and names
-     a package that resolves from the dsh installation or the composed profile.
+  1. Static validation. `.github/check-dsh-bundle.py` runs as the bundle gate
+     (row shape, the single model anchor, and the byte-identity of each embedded
+     persona); here we add that every row's package name resolves from the dsh
+     installation, the composed profile, or the bundle itself.
 
   2. A live run. A throwaway `$DSH_HOME` gets a `headless`-derived profile with
      the bundle composed in; a local deterministic OpenAI-compatible endpoint
-     scripts one subagent spawn; `dsh --profile <p> --json <task>` runs. The
-     root agent's request must carry `reference/orchestrator.md`'s exact bytes,
-     and the spawned child's request must not.
+     scripts the root to call the `worker` tool and then the `reviewer` tool;
+     `dsh --profile <p> --json <task>` runs. The assertions are:
 
-Probe 2 item 1 is answered by (2): a system-prompt section registered through
-the root `agent.ctx` does not reach a spawned child, so no shadowing fallback is
-needed.
+     - the root's request carries `reference/orchestrator.md`'s exact bytes, and
+       no child's does (probe 2 item 1, from issue #4);
+     - the worker child's request carries `reference/worker.md`'s exact bytes and
+       not the reviewer's;
+     - the reviewer child's request carries `reference/code-review-prompt.md`'s
+       exact bytes, its tool catalog holds no write tool, and a write call the
+       endpoint scripts is rejected;
+     - both children's requests carry the bundle's one model anchor.
+
+Probe 2 item 2 (issue #6) is answered by (2): `subagent/start` carries the child
+id but not the row's persona or label, so it cannot map a child to its role.
 
 Requires `dsh` on PATH, Node and pnpm (the dsh plugin manager shells out to
 pnpm). No network: the endpoint is local and the profile links the bundle.
@@ -35,18 +42,21 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 ORCHESTRATOR = ROOT / "reference" / "orchestrator.md"
+WORKER_PAGE = ROOT / "reference" / "worker.md"
+REVIEWER_PAGE = ROOT / "reference" / "code-review-prompt.md"
+GATE = ROOT / ".github" / "check-dsh-bundle.py"
 
-# A marker the endpoint plants in the child's task; any request whose user
-# message carries it is a child request, whatever the child inherited.
-CHILD_MARKER = "DEVSTANDARD-CHILD-TASK-5c1f9a"
-TASK = "Delegate a short task to a subagent, then answer."
-
-# Every field a `cordis.patch.yml` entry may declare (the loader's entry
-# metadata plus the patch-only `insert`).
-PATCH_FIELDS = {"id", "name", "config", "group", "disabled", "inject", "intercept", "isolate", "insert"}
-ENTRY_FIELDS = {"id", "name", "config", "group", "disabled", "inject", "intercept", "isolate"}
+# A marker the endpoint plants in each child's task; a request whose *user* message
+# carries one is that child's request, whatever the child inherited. The root's own
+# requests carry the marker only inside tool-call arguments, never in a user message.
+WORKER_MARKER = "DEVSTANDARD-WORKER-TASK-5c1f9a"
+REVIEWER_MARKER = "DEVSTANDARD-REVIEWER-TASK-7d2e4b"
+TASK = "Delegate a short task to the worker, then to the reviewer, then answer."
+WRITE_TOOLS = {"write", "edit", "str_replace_editor"}
 
 
 def run(cmd, *, env=None, cwd=None, timeout=180, capture=True):
@@ -69,8 +79,22 @@ def require(condition, message):
         raise AssertionError(message)
 
 
+def anchor_options():
+    """The port's one model anchor, read from the bundle's own `cordis.patch.yml`."""
+    rows = yaml.safe_load((ROOT / "cordis.patch.yml").read_text())
+    options = [
+        entry.get("config", {}).get("agentOptions")
+        for row in rows for entry in row.get("insert", [])
+        if entry.get("config", {}).get("agentOptions") is not None
+    ]
+    require(options, "cordis.patch.yml states no agentOptions anchor")
+    require(len({json.dumps(o, sort_keys=True) for o in options}) == 1,
+            f"cordis.patch.yml states more than one agentOptions: {options}")
+    return options[0]
+
+
 # --------------------------------------------------------------------------- #
-# Part 1: static bundle validation
+# Part 1: static validation
 
 
 def dsh_package_dir(dsh_bin):
@@ -114,41 +138,22 @@ def resolve_package(name, anchors):
 
 def validate(repo, profile_dir, dsh_bin):
     print("== static validation ==")
-    manifest = json.loads((repo / "package.json").read_text())
-    bundle = manifest.get("dsh", {}).get("bundle", {})
-    patch = bundle.get("patch")
-    require(patch is not None, "package.json declares no dsh.bundle.patch")
-    patch_files = [patch] if isinstance(patch, str) else patch
-    require(isinstance(patch_files, list) and patch_files, "dsh.bundle.patch must be a path or a list of paths")
-    for rel in patch_files:
-        require((repo / rel).is_file(), f"dsh.bundle.patch names a missing file: {rel}")
-    print(f"  dsh.bundle.patch -> {', '.join(patch_files)} (all exist)")
+    # The bundle gate owns row shape, the one model anchor, and the generated
+    # personas; running it here keeps the evidence script's preflight in one place.
+    code, _, err = run([sys.executable, repo / ".github" / "check-dsh-bundle.py"])
+    require(code == 0, f"the bundle gate failed: {err[-800:]}")
 
-    missing = [rel for rel in manifest.get("files", []) if not (repo / rel.rstrip("/")).exists()]
-    require(not missing, f"package.json files names missing paths: {missing}")
-    print(f"  files -> {len(manifest.get('files', []))} entries, all exist")
-
-    raw = (repo / patch_files[0]).read_text()
-    try:
-        import yaml
-    except ImportError:  # pragma: no cover - the suite already requires PyYAML
-        raise AssertionError("PyYAML is required for the bundle validation")
-    rows = yaml.safe_load(raw)
-    require(isinstance(rows, list) and rows, "cordis.patch.yml must be a non-empty list")
-
+    # Resolution is the one static claim the gate cannot make: it needs the dsh
+    # installation and (in a composed profile) the profile's own node_modules.
+    rows = yaml.safe_load((repo / "cordis.patch.yml").read_text())
     anchors = [repo, profile_dir, dsh_package_dir(dsh_bin)]
     declared = 0
     for row in rows:
         require(isinstance(row, dict), f"patch row is not a mapping: {row!r}")
-        unknown = set(row) - PATCH_FIELDS
-        require(not unknown, f"patch row declares unknown field(s): {sorted(unknown)}")
         entries = row.get("insert", [])
         require(isinstance(entries, list), "patch row `insert` must be a list")
         for entry in entries:
             require(isinstance(entry, dict), f"inserted entry is not a mapping: {entry!r}")
-            unknown = set(entry) - ENTRY_FIELDS
-            require(not unknown, f"inserted entry declares unknown field(s): {sorted(unknown)}")
-            require(isinstance(entry.get("id"), str) and entry["id"], "inserted entry needs a string id")
             name = entry.get("name")
             require(isinstance(name, str) and name, "inserted entry needs a string name")
             resolved = resolve_package(name, anchors)
@@ -156,7 +161,7 @@ def validate(repo, profile_dir, dsh_bin):
             declared += 1
             print(f"  row {entry['id']} -> {name} resolves to {resolved}")
     require(declared, "cordis.patch.yml inserts no plugin rows")
-    print("  cordis.patch.yml: every row names a real package and only known fields")
+    print("  cordis.patch.yml: every row names a resolvable package")
 
 
 # --------------------------------------------------------------------------- #
@@ -164,7 +169,7 @@ def validate(repo, profile_dir, dsh_bin):
 
 
 class FakeOpenAI:
-    """A deterministic OpenAI-compatible endpoint that scripts exactly one subagent spawn."""
+    """A deterministic OpenAI-compatible endpoint that scripts the worker and reviewer calls."""
 
     def __init__(self):
         self.requests = []
@@ -218,24 +223,36 @@ class FakeOpenAI:
                 outer.requests.append(body)
                 messages = body.get("messages") or []
                 tools = body.get("tools") or []
+                tool_roles = [m for m in messages if m.get("role") == "tool"]
 
-                def user_marker():
+                def user_marker(marker):
                     for message in messages:
-                        if message.get("role") == "user" and CHILD_MARKER in json.dumps(message.get("content")):
+                        if message.get("role") == "user" and marker in json.dumps(message.get("content")):
                             return True
                     return False
 
                 if not tools:
                     return self._text("probe title")
-                if user_marker():
-                    return self._text("child-final")
-                if any(message.get("role") == "tool" for message in messages):
-                    return self._text("root-final")
-                return self._tool_call("subagent", json.dumps({
-                    "description": "spawn a child",
-                    "prompt": f"do the child task {CHILD_MARKER}",
-                    "run_in_background": False,
-                }))
+                if user_marker(WORKER_MARKER):
+                    return self._text("worker-final")
+                if user_marker(REVIEWER_MARKER):
+                    if tool_roles:
+                        return self._text("reviewer-final")
+                    # Call a tool the reviewer row's filter removed; the harness must reject it.
+                    return self._tool_call("write", json.dumps({"file_path": "/tmp/probe", "content": "x"}))
+                if len(tool_roles) == 0:
+                    return self._tool_call("worker", json.dumps({
+                        "description": "spawn the worker",
+                        "prompt": f"do the worker task {WORKER_MARKER}",
+                        "run_in_background": False,
+                    }))
+                if len(tool_roles) == 1:
+                    return self._tool_call("reviewer", json.dumps({
+                        "description": "spawn the reviewer",
+                        "prompt": f"do the reviewer task {REVIEWER_MARKER}",
+                        "run_in_background": False,
+                    }))
+                return self._text("root-final")
 
             def _start(self):
                 self.send_response(200)
@@ -265,7 +282,7 @@ class FakeOpenAI:
             def _tool_call(self, name, arguments):
                 self._start()
                 self._chunk({"role": "assistant", "tool_calls": [
-                    {"index": 0, "id": "call_probe_1", "type": "function",
+                    {"index": 0, "id": f"call_probe_{name}", "type": "function",
                      "function": {"name": name, "arguments": ""}}]})
                 self._chunk({"tool_calls": [{"index": 0, "function": {"arguments": arguments}}]})
                 self._chunk({}, "tool_calls")
@@ -275,18 +292,32 @@ class FakeOpenAI:
         return Handler
 
 
-def system_text(request):
+def prompt_text(request):
+    """Every system-prompt section in a request.
+
+    dsh's adapter carries the composed system prompt as a `developer` message on a child and as a
+    `system` message on the root, so both roles are read; either alone would miss half the claim.
+    """
     parts = []
     for message in request.get("messages") or []:
-        if message.get("role") == "system":
+        if message.get("role") in ("system", "developer"):
             content = message.get("content")
             parts.append(content if isinstance(content, str) else json.dumps(content))
     return "\n".join(parts)
 
 
-def is_child(request):
+def tool_names(request):
+    names = set()
+    for tool in request.get("tools") or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if isinstance(function, dict) and function.get("name"):
+            names.add(function["name"])
+    return names
+
+
+def is_child(request, marker):
     for message in request.get("messages") or []:
-        if message.get("role") == "user" and CHILD_MARKER in json.dumps(message.get("content")):
+        if message.get("role") == "user" and marker in json.dumps(message.get("content")):
             return True
     return False
 
@@ -297,6 +328,7 @@ def probe(repo, dsh_bin, keep):
     profile = "devstandard-probe"
     env = {**os.environ, "DSH_HOME": str(home), "PROBE_KEY": "devstandard-local-fixture"}
     env["DSH_PERMISSION_MODE"] = "danger-full-access"  # no approval channel in a one-shot run
+    model = anchor_options()["model"]
     print(f"== live run (scratch {scratch}) ==")
     try:
         code, _, err = run([dsh_bin, profile, "--from-default-profile", "headless", "--dump-config"],
@@ -308,6 +340,8 @@ def probe(repo, dsh_bin, keep):
 
         with FakeOpenAI() as endpoint:
             patch = scratch / "llm.yml"
+            # The root runs on `probe-model`; the bundle's anchor must also be a
+            # registered route so the children's `agentOptions.model` resolves.
             patch.write_text(
                 "- id: llm-pi-ai\n"
                 "  config:\n"
@@ -320,6 +354,12 @@ def probe(repo, dsh_bin, keep):
                 "          - id: probe-model\n"
                 "            contextWindow: 131072\n"
                 "            maxTokens: 4096\n"
+                f"          - id: {model}\n"
+                "            contextWindow: 131072\n"
+                "            maxTokens: 4096\n"
+                # The route the bundle anchors on must offer the effort the rows pin.
+                "            reasoningEfforts:\n"
+                "              max: max\n"
                 "- id: agent-default-model\n"
                 "  config:\n"
                 "    provider: probe-local\n"
@@ -328,38 +368,116 @@ def probe(repo, dsh_bin, keep):
             code, out, err = run([dsh_bin, profile, "--patch", str(patch), "--json", TASK], env=env)
             require(code == 0, f"the dsh run failed: {err[-800:]}")
             print("  run events:")
+            events = []
             for line in out.splitlines():
                 print("   ", line)
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
             requests = list(endpoint.requests)
 
-        return scratch, requests
+        return scratch, requests, events
     finally:
         if not keep:
             shutil.rmtree(scratch, ignore_errors=True)
 
 
-def analyse(requests):
+def analyse(requests, events):
     print("== analysis ==")
-    child = [i for i, request in enumerate(requests) if is_child(request)]
-    root = [i for i, request in enumerate(requests) if not is_child(request) and (request.get("tools") or [])]
-    page = ORCHESTRATOR.read_text()
-    print(f"  captured requests: {len(requests)} (root {len(root)}, child {len(child)})")
-    require(child, "no spawned-child request was captured")
-    require(root, "no root request was captured")
+    orchestrator = ORCHESTRATOR.read_text()
+    worker_page = WORKER_PAGE.read_text()
+    reviewer_page = REVIEWER_PAGE.read_text()
+    anchor = anchor_options()
+    anchor_model = anchor["model"]
+    anchor_effort = anchor["reasoningEffort"]
+
+    worker_child = [i for i, r in enumerate(requests) if is_child(r, WORKER_MARKER)]
+    reviewer_child = [i for i, r in enumerate(requests) if is_child(r, REVIEWER_MARKER)]
+    root = [i for i, r in enumerate(requests)
+            if not is_child(r, WORKER_MARKER) and not is_child(r, REVIEWER_MARKER) and (r.get("tools") or [])]
+    print(f"  captured requests: {len(requests)} (root {len(root)}, worker {len(worker_child)}, "
+          f"reviewer {len(reviewer_child)})")
     for i, request in enumerate(requests):
-        kind = "child" if i in child else ("root" if i in root else "title")
-        print(f"  req{i}: kind={kind} system_bytes={len(system_text(request))} "
-              f"carries_orchestrator={page in system_text(request)}")
+        kind = ("worker" if i in worker_child else "reviewer" if i in reviewer_child
+                else "root" if i in root else "title")
+        print(f"  req{i}: kind={kind} model={request.get('model')!r} "
+              f"tools={sorted(tool_names(request))}")
+    require(worker_child, "no worker-child request was captured")
+    require(reviewer_child, "no reviewer-child request was captured")
+    require(root, "no root request was captured")
 
-    carrying = [i for i in root if page in system_text(requests[i])]
+    # Role delivery: the root alone carries the orchestrator page.
+    carrying = [i for i in root if orchestrator in prompt_text(requests[i])]
     require(carrying, "the root request does not carry reference/orchestrator.md's bytes")
-    print(f"  OK: root request(s) {carrying} carry {ORCHESTRATOR.name}'s exact bytes")
+    print(f"  OK: root request(s) {carrying} carry {ORCHESTRATOR.name}'s bytes")
 
-    leaked = [i for i in child if page in system_text(requests[i])]
-    require(not leaked, f"a spawned child request carries the orchestrator page: {leaked}")
-    print("  OK: no spawned-child request carries reference/orchestrator.md")
-    print("  Probe 2 item 1: a section on the root agent.ctx does NOT reach a spawned child; "
-          "no shadowing fallback is required.")
+    # Each child carries its own role page, and only its own.
+    for name, indices, page, page_label, other, other_label in (
+        ("worker", worker_child, worker_page, "worker.md", reviewer_page, "code-review-prompt.md"),
+        ("reviewer", reviewer_child, reviewer_page, "code-review-prompt.md", worker_page, "worker.md"),
+    ):
+        for i in indices:
+            text = prompt_text(requests[i])
+            require(page in text, f"the {name} child request does not carry {page_label}'s exact bytes")
+            require(other not in text, f"the {name} child request also carries {other_label}")
+            require(orchestrator not in text, f"the {name} child request carries the orchestrator page")
+        print(f"  OK: {name} child request(s) {indices} carry {page_label} alone, never the orchestrator")
+
+    # The root can call both role tools.
+    root_tools = set().union(*(tool_names(requests[i]) for i in root))
+    require({"worker", "reviewer"} <= root_tools, f"the root cannot call both tools: {sorted(root_tools)}")
+    print("  OK: the root's tool catalog holds both `worker` and `reviewer`")
+
+    # The reviewer is denied the write tools the worker keeps.
+    reviewer_tools = set().union(*(tool_names(requests[i]) for i in reviewer_child))
+    worker_tools = set().union(*(tool_names(requests[i]) for i in worker_child))
+    held = reviewer_tools & WRITE_TOOLS
+    require(not held, f"the reviewer child holds write tool(s) {sorted(held)}")
+    require({"write", "edit"} <= worker_tools,
+            f"the worker child does not hold the write tools, so the filter proves nothing: {sorted(worker_tools)}")
+    print(f"  OK: the reviewer catalog drops {sorted(WRITE_TOOLS & worker_tools)}; the worker keeps them")
+
+    # Both children run on the bundle's one anchor, at the anchored effort.
+    for name, indices in (("worker", worker_child), ("reviewer", reviewer_child)):
+        for i in indices:
+            require(requests[i].get("model") == anchor_model,
+                    f"the {name} child ran on {requests[i].get('model')!r}, not the anchor {anchor_model!r}")
+            require(requests[i].get("reasoning_effort") == anchor_effort,
+                    f"the {name} child ran at {requests[i].get('reasoning_effort')!r}, "
+                    f"not {anchor_effort!r}")
+    print(f"  OK: both children ran on {anchor_model!r} at reasoning_effort={anchor_effort!r}")
+
+    # Both role calls the root made completed: the root's own event stream proves the
+    # tools are callable, independent of what the children's requests show.
+    called = {e.get("callId"): e.get("tool") for e in events if e.get("type") == "tool_call"}
+    results = {e.get("callId"): e.get("status") for e in events if e.get("type") == "tool_result"}
+    for role in ("worker", "reviewer"):
+        call_ids = [cid for cid, tool in called.items() if tool == role]
+        require(call_ids and all(results.get(cid) == "completed" for cid in call_ids),
+                f"the root's {role} call did not complete: {[(cid, results.get(cid)) for cid in call_ids]}")
+    print("  OK: the root called both `worker` and `reviewer`, and both calls completed")
+
+    # The write call the endpoint scripted for the reviewer was rejected. The child's
+    # rejection is not in the root's event stream, so read it from the reviewer child's
+    # own follow-up request: its tool result must report a failure, not a written file.
+    failures = []
+    for i in reviewer_child:
+        for message in requests[i].get("messages") or []:
+            if message.get("role") == "tool":
+                failures.append(json.dumps(message.get("content")))
+    require(failures, "the reviewer's `write` call produced no tool result to inspect")
+    require(all("error" in text.lower() or "unknown" in text.lower() or "denied" in text.lower()
+                or "not " in text.lower() for text in failures),
+            f"the reviewer's `write` call was not reported as rejected: {failures}")
+    print(f"  OK: the reviewer's `write` call was rejected: {failures[0][:200]}")
+
+    # Probe 2 item 2: `subagent/start`'s payload is {runId, provider, id, local} — the
+    # child id, but no persona and no label. The command that shows it is the type
+    # source below; the guard lane therefore keeps its union fallback.
+    print('  Probe 2 item 2: `subagent/start` carries the child id '
+          '(SubagentRunInfo {runId, provider, id, local}) but neither the row persona nor its '
+          'label, so it cannot map a child to its role.')
 
 
 def main():
@@ -368,7 +486,8 @@ def main():
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
     args = parser.parse_args()
     require(args.dsh, "dsh was not found on PATH; pass --dsh")
-    require(ORCHESTRATOR.is_file(), f"missing {ORCHESTRATOR}")
+    for page in (ORCHESTRATOR, WORKER_PAGE, REVIEWER_PAGE):
+        require(page.is_file(), f"missing {page}")
 
     scratch = Path(tempfile.mkdtemp(prefix="devstandard-dsh-validate-"))
     try:
@@ -377,10 +496,11 @@ def main():
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
-    _, requests = probe(ROOT, args.dsh, args.keep)
-    analyse(requests)
+    _, requests, events = probe(ROOT, args.dsh, args.keep)
+    analyse(requests, events)
 
-    print("\nRESULT: bundle validates and role delivery holds (root has the page, child does not)")
+    print("\nRESULT: bundle validates; both role tools are callable, each child carries its own "
+          "page and the right tool surface, and both run on the one anchor")
 
 
 if __name__ == "__main__":

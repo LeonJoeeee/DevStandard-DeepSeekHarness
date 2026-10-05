@@ -31,6 +31,8 @@ jobs:
         run: python3 .github/test-hard-edges.py
       - name: Claude-native agent definitions carry the role sources
         run: python3 .github/check-agents.py
+      - name: dsh bundle rows, the one model anchor, and the generated role personas
+        run: python3 .github/check-dsh-bundle.py
       - name: Complete role delivery and overflow fallback
         run: python3 .github/test-session-start.py
       - name: Every shipped artifact arrives whole through its declared handlers
