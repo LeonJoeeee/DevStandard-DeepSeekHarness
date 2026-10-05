@@ -1,6 +1,6 @@
 # 0016 — superpowers becomes a dependency: point at its skills, don't copy them
 
-Status: Accepted (2026-07-16). Amended by 0045 (2026-09-05). Supersedes 0002. Amended (2026-07-16). Amended by 0039 (2026-08-26). Amended by 0049 (2026-09-07). Amended (2026-09-07). Amended by 0056 (2026-09-11). Amended by 0063 (2026-09-29).
+Status: Superseded by 0067 (2026-10-05). Originally Accepted (2026-07-16). Amended by 0045 (2026-09-05). Supersedes 0002. Amended (2026-07-16). Amended by 0039 (2026-08-26). Amended by 0049 (2026-09-07). Amended (2026-09-07). Amended by 0056 (2026-09-11). Amended by 0063 (2026-09-29).
 
 ## Context
 

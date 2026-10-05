@@ -142,11 +142,13 @@ Claude runtime job becomes a dsh job driving `dsh --profile headless` against a 
 OpenAI-compatible endpoint, asserting that the root prompt carries the orchestrator page, that a
 child carries its own role and not the orchestrator's, and that the guard refuses each role's word.
 
-**(i) Decisions to record.** New ADRs, claimed at 0064: the port and its packaging; dispatch as the
-harness's own subagent only, with the lost per-worker OS sandbox named; the single model anchor;
-superpowers ported into the package. Dated amendment blocks, not new files, where the decision stands
-and only its carrier moved: the repo instructions file, delivered role context, the agent-definition
-carrier, the per-harness mechanics page, and the guard's three words.
+**(i) Decisions recorded.** Four new ADRs, claimed at 0064 and carried in this PR with the spec, as
+issue #1 requires before any implementation: **0064** this repository delivers DevStandard natively
+for DeepSeek Harness (supersedes 0063; amends 0018, 0049, 0060, 0061, 0062); **0065** dispatched work
+is the host's own subagent, with the lost per-worker OS sandbox named (amends 0036); **0066** every
+dispatched role runs one model at one effort (supersedes 0050); **0067** the bound superpowers craft
+is ported into the package (supersedes 0016). Dated amendment blocks, not new files, wherever the
+decision stands and only its carrier moved.
 
 ### Probe 2 (before implementation, small and deterministic)
 

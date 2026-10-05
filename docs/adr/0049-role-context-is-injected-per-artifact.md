@@ -3,7 +3,7 @@
 Status: Accepted (2026-09-07). Amends 0007 (one always-loaded page becomes several role artifacts,
 and its every-session budget becomes a per-artifact byte gate), 0015 (its delivery contrast),
 0016 (where the skill bindings are stated) and 0019 (the delivery mechanism only — its diagnosis,
-its hook matcher and its unsupported-environment behavior stand). Amended by 0056 (2026-09-11). Amended by 0063 (2026-09-29).
+its hook matcher and its unsupported-environment behavior stand). Amended by 0056 (2026-09-11). Amended by 0063 (2026-09-29). Amended by 0064 (2026-10-05).
 
 *This ADR changes what DevStandard ships — what the SessionStart hook emits, and which page each
 role reads — so a reader in a seeded project should take it as method.*
@@ -85,3 +85,9 @@ artifact remains budget-gated.
 recovery-skill exception and native Codex workers. Delivery is the Claude hook's alone; a Codex CLI
 worker receives its role in the dispatch brief, and a CLI child's `DEVSTANDARD_ROLE` marker still
 suppresses orchestrator startup context wherever the hook runs.
+
+**Amendment (2026-10-05, see 0064):** the carriers change; the decision does not. The orchestrator's
+role arrives as a system-prompt section registered on the root agent's scope, and a worker's and a
+reviewer's as the `persona` of their subagent row. Each role still receives one delivered artifact
+rather than a pointer, and the host part-cap that shaped the old carrier no longer exists, so the
+delivery is whole by construction instead of by arithmetic.
