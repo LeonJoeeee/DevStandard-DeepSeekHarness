@@ -1,9 +1,0 @@
-{
-  "name": "devstandard",
-  "version": "2.1.0",
-  "description": "A development method for Claude Code: one orchestrator dispatches isolated workers, Claude subagents or Codex CLI processes, through issues, evidence-bearing PRs, clean review and green CI. Measured static context delivery and role-bound superpowers craft.",
-  "author": {
-    "name": "Leon"
-  },
-  "license": "MIT"
-}

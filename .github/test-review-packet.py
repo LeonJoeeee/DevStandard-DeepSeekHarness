@@ -805,8 +805,8 @@ if os.environ.get('WATCH_READY'): Path(os.environ['WATCH_READY']).touch()""")
         install=self.root/'plugin'
         shutil.copytree(SOURCE/'scripts',install/'scripts')
         shutil.copytree(SOURCE/'reference',install/'reference')
-        # Probe fresh contract reads from a complete installed-plugin fixture.
-        shutil.copytree(SOURCE/'agents',install/'agents')
+        # Probe fresh contract reads from a complete installed-bundle fixture. The `agents/`
+        # copy went with the directory in #16; nothing here reads an agent definition.
         shutil.copy(SOURCE/'cordis.patch.yml',install/'cordis.patch.yml')
         self.script=install/'scripts/review-packet'
         contract=install/'reference/code-review-prompt.md'

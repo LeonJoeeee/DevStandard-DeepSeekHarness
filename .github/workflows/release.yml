@@ -12,8 +12,6 @@ jobs:
       - uses: actions/checkout@v7
       - name: Test (the same checks CI runs gate the release)
         run: |
-          python3 .github/test-session-start.py
-          python3 .github/check-core-budget.py
           ! grep -rn "@[a-zA-Z0-9_-]*/" reference/ --include='*.md' \
             | grep -v "actions/" | grep -v "anthropic" | grep .
       - name: The release manifest version must match the tag
