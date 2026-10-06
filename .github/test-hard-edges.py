@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Hard-edge probes: real git replay, with doubled external GitHub responses."""
-from contextlib import ExitStack, contextmanager, redirect_stderr
+from contextlib import redirect_stderr
 import ast
 import importlib.util
 import io
@@ -830,59 +830,23 @@ REFUSAL_PAGE = {'worker': 'reference/worker.md',
 
 
 
-_SHARED = []
+def role_hook(command, tool='bash', field='command', *, role='orchestrator', cwd=None):
+    """The engine's decision for one well-formed shell call: the refusal text, or None.
 
-
-def shared_module():
-    """One import of the real implementation for the probes that only read it."""
-    if not _SHARED:
-        _SHARED.append(module())
-    return _SHARED[0]
-
-
-def run_role_hook(event, *, role='orchestrator', process_role=None, injected=None):
-    """Run the real hook handler on one event, returning its stdout and stderr.
-
-    `api` and `run` are doubled to raise on every call, so a GitHub read or a
-    subprocess on the decision path fails the probe instead of answering it.
-    `injected` replaces the decision itself, so a broken guard can be probed.
+    Since #16 the carrier is dsh's `tools/pre-execute` and its shell tool is `bash`; the
+    Python engine is the policy `guard.js` is pinned to (`.github/check-dsh-guard.py`). The
+    decision reads the command's own text and nothing else (#334); `cwd` is accepted and
+    ignored, because no path is read.
     """
-    h = shared_module()
-    hook_env = {k: v for k, v in os.environ.items() if k != 'DEVSTANDARD_ROLE'}
-    if process_role is not None:
-        hook_env['DEVSTANDARD_ROLE'] = process_role
-    out, err = io.StringIO(), io.StringIO()
-    with ExitStack() as stack:
-        for context in (patch.dict(os.environ, hook_env, clear=True),
-                        patch.dict(sys.modules, {'hard_edges': h}),
-                        patch.object(h, 'run', side_effect=AssertionError('the hook ran a subprocess')),
-                        patch.object(h, 'api', side_effect=AssertionError('the hook read GitHub')),
-                        patch.object(sys, 'argv', ['pre-tool-use', '--role', role]),
-                        patch.object(sys, 'stdin', io.StringIO(json.dumps(event))),
-                        patch.object(sys, 'stdout', out), patch.object(sys, 'stderr', err)):
-            stack.enter_context(context)
-        if injected is not None:
-            stack.enter_context(patch.object(h, 'tool_decision', side_effect=injected))
-        runpy.run_path(str(ROOT / 'hooks/pre-tool-use'), run_name='__main__')
-    return out.getvalue(), err.getvalue()
-
-
-def role_hook(command, tool='Bash', field='command', *, role='orchestrator', cwd=None,
-              process_role=None):
-    """The decision alone, for a well-formed shell event. There is nothing to configure."""
-    event = {'tool_name': tool, 'tool_input': {field: command}, 'cwd': cwd or str(ROOT)}
-    out, err = run_role_hook(event, role=role, process_role=process_role)
-    assert err == '', f'a well-formed event warned: {err!r}'
-    return json.loads(out)
+    return module().tool_decision(role, tool, {field: command})
 
 
 class RoleRuleTest(unittest.TestCase):
-    """The whole hook contract: the command's own text, one word list per role, nothing else."""
+    """The whole rule: the command's own text, one word list per role, nothing else."""
 
     def deny(self, result, command):
-        output = result.get('hookSpecificOutput', {})
-        self.assertEqual(output.get('permissionDecision'), 'deny', command)
-        return output['permissionDecisionReason']
+        self.assertIsNotNone(result, command)
+        return result
 
     def test_every_refused_word_refuses_as_a_command_and_is_admitted_as_text(self):
         shard = parse_shard(os.environ.get('HARD_EDGE_SHARD'))
@@ -891,7 +855,7 @@ class RoleRuleTest(unittest.TestCase):
             for word, witness in rows:
                 for position, wrap, refused in POSITIONS:
                     candidate = wrap(witness)
-                    for tool, field in (('Bash', 'command'), ('bash', 'command')):
+                    for tool, field in (('bash', 'command'),):
                         index = seen
                         seen += 1
                         if not selected_probe(index, shard):
@@ -899,7 +863,7 @@ class RoleRuleTest(unittest.TestCase):
                         with self.subTest(role=role, word=word, position=position, tool=tool):
                             result = role_hook(candidate, tool, field, role=role)
                             if not refused:
-                                self.assertEqual(result, {}, candidate)
+                                self.assertIsNone(result, candidate)
                                 admissions += 1
                                 continue
                             reason = self.deny(result, candidate)
@@ -914,17 +878,17 @@ class RoleRuleTest(unittest.TestCase):
     def test_ordinary_work_is_admitted_for_every_role(self):
         for role, commands in ADMITTED.items():
             for command in commands + TEXT_IS_NOT_A_COMMAND:
-                for tool, field in (('Bash', 'command'), ('bash', 'command')):
+                for tool, field in (('bash', 'command'),):
                     with self.subTest(role=role, command=command, tool=tool):
-                        self.assertEqual(role_hook(command, tool, field, role=role), {})
+                        self.assertIsNone(role_hook(command, tool, field, role=role))
 
     def test_every_word_the_shrink_removed_admits_the_work_it_refused(self):
-        """#425: one probe per struck-out word, in both tool-input formats."""
+        """#425: one probe per struck-out word, in the shell tool's input format."""
         for role, rows in ADMITTED_SINCE_THE_SHRINK.items():
             for removed, command in rows:
-                for tool, field in (('Bash', 'command'), ('bash', 'command')):
+                for tool, field in (('bash', 'command'),):
                     with self.subTest(role=role, removed=removed, command=command, tool=tool):
-                        self.assertEqual(role_hook(command, tool, field, role=role), {})
+                        self.assertIsNone(role_hook(command, tool, field, role=role))
 
     def test_unparseable_syntax_is_never_a_reason_to_refuse(self):
         """Every role: broken quoting decides on its words alone (#323)."""
@@ -937,16 +901,16 @@ class RoleRuleTest(unittest.TestCase):
                         'cat <<-EOF\n\tgit merge main'):
             for role in ('worker', 'reviewer', 'orchestrator'):
                 with self.subTest(command=command, role=role):
-                    self.assertEqual(role_hook(command, role=role), {})
+                    self.assertIsNone(role_hook(command, role=role))
 
-    def test_obfuscation_and_interpreters_are_outside_the_hook(self):
+    def test_obfuscation_and_interpreters_are_outside_the_guard(self):
         """The accepted residual, stated as behaviour rather than left implied.
 
         #351 widens it by what the stripped positions imply: an interpreter given its script
         as a quoted argument or a here-document, and a word quoted as its own argument to the
         command that runs it. They are the same class as the `python3 -c` and base64 rows
         below — the command runs text the scan no longer reads, and writing it that way is a
-        deliberate act, not the forgotten lane this hook exists to remind someone of. They
+        deliberate act, not the forgotten lane this guard exists to remind someone of. They
         are recorded here as behaviour rather than answered with a new rule.
         """
         for command in ('python3 -c \'import subprocess; subprocess.run(["git","pu"+"sh","origin","ma"+"in"])\'',
@@ -957,12 +921,12 @@ class RoleRuleTest(unittest.TestCase):
                         'git "merge" main'):
             for role in ('worker', 'reviewer', 'orchestrator'):
                 with self.subTest(command=command, role=role):
-                    self.assertEqual(role_hook(command, role=role), {})
+                    self.assertIsNone(role_hook(command, role=role))
         # A word left unquoted anywhere in the command is still read, and that is the whole
         # of what survives: quote the word and it escapes, quote anything else and it does not.
-        self.assertNotEqual(role_hook('git merge "origin/main"', role='worker'), {})
-        self.assertEqual(role_hook('gh api repos/o/r "-X" POST', role='reviewer'), {})
-        self.assertNotEqual(role_hook('gh api repos/o/r -X "POST"', role='reviewer'), {})
+        self.assertIsNotNone(role_hook('git merge "origin/main"', role='worker'))
+        self.assertIsNone(role_hook('gh api repos/o/r "-X" POST', role='reviewer'))
+        self.assertIsNotNone(role_hook('gh api repos/o/r -X "POST"', role='reviewer'))
 
     def test_the_scan_reads_the_command_and_not_the_data_it_carries(self):
         """#351: a here-document body and a quoted string are removed before the word list.
@@ -1002,25 +966,25 @@ class RoleRuleTest(unittest.TestCase):
         # scanning: the same text, and the same decision, in linear time.
         self.assertEqual(h.command_only('cat <<EOF && git merge main'),
                          'cat <<EOF && git merge main')
-        self.assertIsNotNone(h.tool_decision('worker', 'Bash',
+        self.assertIsNotNone(h.tool_decision('worker', 'bash',
                                              {'command': 'cat <<EOF && git merge main'}))
         # Removing text can only admit: a word split across a quote boundary is not made whole.
         self.assertEqual(h.command_only('me"x"rge'), 'me""rge')
-        self.assertIsNone(h.tool_decision('worker', 'Bash', {'command': 'me"x"rge'}))
+        self.assertIsNone(h.tool_decision('worker', 'bash', {'command': 'me"x"rge'}))
         # A word the data does not hide is still read, however broken the quoting around it.
-        self.assertIsNotNone(h.tool_decision('worker', 'Bash',
+        self.assertIsNotNone(h.tool_decision('worker', 'bash',
                                              {'command': "echo 'git merge main"}))
 
     def test_the_refusal_reason_names_the_word_and_the_merge_entry(self):
         h = module()
-        self.assertIn("'merge'", h.tool_decision('worker', 'Bash', {'command': 'git merge x'}))
+        self.assertIn("'merge'", h.tool_decision('worker', 'bash', {'command': 'git merge x'}))
         self.assertIn('scripts/guard merge', h.tool_decision(
-            'orchestrator', 'Bash', {'command': 'gh pr merge 1'}))
+            'orchestrator', 'bash', {'command': 'gh pr merge 1'}))
         # A local merge is reversible and is the orchestrator's own work (#425).
-        self.assertIsNone(h.tool_decision('orchestrator', 'Bash',
+        self.assertIsNone(h.tool_decision('orchestrator', 'bash',
                                           {'command': 'git merge origin/main'}))
         self.assertIn('main', h.tool_decision(
-            'worker', 'Bash', {'command': 'git push origin main'}))
+            'worker', 'bash', {'command': 'git push origin main'}))
 
     def test_every_refusal_is_a_reminder_not_a_wall(self):
         """Three parts: the word refused, what the role does instead, and the one page.
@@ -1044,7 +1008,7 @@ class RoleRuleTest(unittest.TestCase):
         for role, rows in cases.items():
             for command, word in rows:
                 with self.subTest(role=role, command=command):
-                    reason = h.tool_decision(role, 'Bash', {'command': command})
+                    reason = h.tool_decision(role, 'bash', {'command': command})
                     self.assertIsNotNone(reason, command)
                     self.assertIn(role, reason)
                     self.assertIn(word, reason)
@@ -1065,7 +1029,7 @@ class RoleRuleTest(unittest.TestCase):
                         'gh pr view 1 --json mergeable',
                         'git push origin task/mainline'):
             with self.subTest(command=command):
-                self.assertIsNone(h.tool_decision('worker', 'Bash', {'command': command}))
+                self.assertIsNone(h.tool_decision('worker', 'bash', {'command': command}))
         self.assertFalse(h.carries('git branch --merged', 'merge'))
         self.assertFalse(h.carries('gh pr view 1 --json mergeable', 'merge'))
         self.assertFalse(h.carries('git push origin task/mainline', 'main'))
@@ -1074,7 +1038,7 @@ class RoleRuleTest(unittest.TestCase):
         self.assertFalse(h.carries('gh api repos/o/r -XPOST', '-X'))
         self.assertTrue(h.carries_flag('gh api repos/o/r -XPOST', '-X'))
         self.assertTrue(h.carries_flag('gh api repos/o/r --method=POST', '--method'))
-        self.assertIsNotNone(h.tool_decision('reviewer', 'Bash',
+        self.assertIsNotNone(h.tool_decision('reviewer', 'bash',
                                              {'command': 'gh api repos/o/r -XPOST'}))
 
     def test_a_phrase_matches_only_where_its_words_stand_together(self):
@@ -1101,7 +1065,7 @@ class RoleRuleTest(unittest.TestCase):
                                  ('git push origin task/main-line', False),
                                  ('git rebase origin/main', False)):
             with self.subTest(command=command):
-                self.assertEqual(h.tool_decision('worker', 'Bash', {'command': command})
+                self.assertEqual(h.tool_decision('worker', 'bash', {'command': command})
                                  is not None, refused)
 
     def test_the_default_branch_is_main_or_master_by_name(self):
@@ -1110,7 +1074,7 @@ class RoleRuleTest(unittest.TestCase):
         self.assertEqual(h.DEFAULT_BRANCHES, ('main', 'master'))
         # A target whose default branch is called something else is not covered by this rule,
         # and nothing the hook can read would tell it otherwise.
-        self.assertIsNone(h.tool_decision('worker', 'Bash', {'command': 'git push origin trunk'}))
+        self.assertIsNone(h.tool_decision('worker', 'bash', {'command': 'git push origin trunk'}))
 
     def test_a_recursive_rm_is_nobodys_word_any_more(self):
         """#425: the rule refused `rm -rf node_modules`, `rm -r .tox` and every relative
@@ -1125,7 +1089,7 @@ class RoleRuleTest(unittest.TestCase):
                         'rm -rf /srv/data', 'rm -rf /'):
             for role in ('worker', 'reviewer', 'orchestrator'):
                 with self.subTest(command=command, role=role):
-                    self.assertIsNone(h.tool_decision(role, 'Bash', {'command': command}))
+                    self.assertIsNone(h.tool_decision(role, 'bash', {'command': command}))
 
     def test_release_is_not_the_hooks_business_for_any_role(self):
         """#326 dropped the orchestrator's `tag`/`release`; #425 drops the lane roles'.
@@ -1141,7 +1105,7 @@ class RoleRuleTest(unittest.TestCase):
                         'cargo build --release', 'pytest -k release', 'make release'):
             for role in ('worker', 'reviewer', 'orchestrator'):
                 with self.subTest(command=command, role=role):
-                    self.assertIsNone(h.tool_decision(role, 'Bash', {'command': command}))
+                    self.assertIsNone(h.tool_decision(role, 'bash', {'command': command}))
 
     def test_the_orchestrators_founding_push_is_admitted_with_no_carve_out(self):
         """#326: GitHub's branch protection refuses this once founding has set it."""
@@ -1149,19 +1113,19 @@ class RoleRuleTest(unittest.TestCase):
         for command in ('git push origin main', 'git push -u origin HEAD:main',
                         'git push origin HEAD:refs/heads/master'):
             with self.subTest(command=command):
-                self.assertIsNone(h.tool_decision('orchestrator', 'Bash', {'command': command}))
+                self.assertIsNone(h.tool_decision('orchestrator', 'bash', {'command': command}))
         # The merge entry point is still the orchestrator's one refusal.
-        self.assertIsNotNone(h.tool_decision('orchestrator', 'Bash',
+        self.assertIsNotNone(h.tool_decision('orchestrator', 'bash',
                                              {'command': 'gh pr merge 1 --squash'}))
 
-    def test_the_hook_judges_commands_and_never_tool_names(self):
+    def test_the_engine_judges_commands_and_never_tool_names(self):
         """#334: the per-role tool allowlists are gone; a tool name is never a refusal.
 
         Spawning a sub-agent is useful work — a role may delegate a piece of its own task
         below itself (#339) — and the allowlist that refused it was the
         enumerate-what-is-allowed shape ADR 0051 rejected for commands. What a role may
-        reach is set outside the hook and only as a denial: the reviewer's `disallowedTools`,
-        and the per-role Codex sandbox.
+        reach is set outside the engine and only as a denial: the reviewer's `disallowedTools`
+        and the row's `toolFilter` on dsh.
         """
         h = module()
         for tool in ('Agent', 'Task', 'spawn_agent', 'SendMessage', 'Read', 'Glob', 'Grep',
@@ -1175,166 +1139,29 @@ class RoleRuleTest(unittest.TestCase):
         self.assertIsNone(h.tool_decision('worker', 'Agent', {}))
         self.assertIsNone(h.tool_decision('worker', 'spawn_agent', {}))
         self.assertIsNone(h.tool_decision('orchestrator', 'SendMessage', {}))
-        # A shell tool is still judged, by its command's own text and nothing else. Both shell
-        # names the two live carriers send reach the engine; `exec_command`, the Claude CLI's
-        # exec tool, is the name that goes with the Codex surface (#14).
-        for name in ('Bash', 'bash'):
-            with self.subTest(shell=name):
-                self.assertIsNotNone(h.tool_decision('worker', name,
-                                                     {'command': 'git merge origin/main'}))
+        # A shell tool is still judged, by its command's own text and nothing else. dsh's shell
+        # tool is `bash`; `Bash` (the Claude hook this lane removed) and `exec_command` (the
+        # Claude CLI's exec tool, gone with the Codex surface, #14) are names nothing sends.
+        self.assertIsNotNone(h.tool_decision('worker', 'bash',
+                                             {'command': 'git merge origin/main'}))
+        self.assertIsNone(h.tool_decision('worker', 'Bash', {'command': 'git merge origin/main'}))
         self.assertIsNone(h.tool_decision('worker', 'exec_command', {'cmd': 'git merge origin/main'}))
         for name in ('READ_TOOLS', 'WORKER_TOOLS', 'REVIEWER_TOOLS', 'tool_refusal'):
             with self.subTest(name=name):
                 self.assertFalse(hasattr(h, name), f'{name} should be gone with the allowlist')
 
-    def test_a_native_worker_or_reviewer_subagent_type_selects_its_own_role(self):
-        h = module()
-        # Each role's own surviving rule: since #425 no one command is refused for both.
-        for agent_type, command in (('worker', 'git merge origin/main'),
-                                    ('devstandard:worker', 'gh pr merge 1 --squash'),
-                                    ('reviewer', 'gh api repos/o/r -X POST'),
-                                    ('devstandard:reviewer', 'gh api repos/o/r -f k=v')):
-            with self.subTest(agent_type=agent_type):
-                out = io.StringIO()
-                event = {'tool_name': 'Bash', 'tool_input': {'command': command},
-                         'cwd': str(ROOT), 'agent_type': agent_type}
-                with patch.dict(sys.modules, {'hard_edges': h}), \
-                     patch.object(sys, 'argv', ['pre-tool-use', '--role', 'orchestrator']), \
-                     patch.object(sys, 'stdin', io.StringIO(json.dumps(event))), \
-                     patch.object(sys, 'stdout', out):
-                    runpy.run_path(str(ROOT / 'hooks/pre-tool-use'), run_name='__main__')
-                reason = json.loads(out.getvalue())['hookSpecificOutput']['permissionDecisionReason']
-                self.assertIn(agent_type.split(':')[-1], reason)
-
-    def test_a_cli_role_marker_overrides_a_nominal_orchestrator_role(self):
-        # The command is each role's own surviving rule, and the orchestrator admits both.
-        for process_role, command in (('worker', 'git merge origin/main'),
-                                      ('reviewer', 'gh api repos/o/r -X POST')):
-            with self.subTest(process_role=process_role):
-                self.assertEqual(role_hook(command, role='orchestrator'), {})
-                reason = self.deny(role_hook(command, role='orchestrator',
-                                             process_role=process_role), command)
-                self.assertIn(process_role, reason)
-
-    def test_named_children_keep_the_parent_role_but_untyped_children_default_to_worker(self):
-        # Removing the agent_type constraint would incorrectly bind Claude research children.
-        for agent_type, denied in [('general-purpose', False), ('Explore', False),
-                                   ('default', True), (None, True)]:
-            with self.subTest(agent_type=agent_type):
-                event = dict(tool_name='Bash', tool_input={'command': 'git merge origin/main'},
-                             agent_id='native-child')
-                if agent_type is not None:
-                    event['agent_type'] = agent_type
-                result = subprocess.run([sys.executable, str(ROOT / 'hooks/pre-tool-use'),
-                                         '--role', 'orchestrator'], input=json.dumps(event),
-                                        text=True, capture_output=True,
-                                        env={k:v for k,v in os.environ.items() if k != 'DEVSTANDARD_ROLE'})
-                self.assertEqual(result.returncode, 0, result.stderr)
-                output = json.loads(result.stdout)
-                self.assertEqual(bool(output), denied)
-                if denied:
-                    self.assertIn('worker', output['hookSpecificOutput']['permissionDecisionReason'])
-
-    def test_a_broken_guard_admits_the_call_and_warns_instead_of_stopping_the_lane(self):
-        """#437: a bug in the guard must not deny every tool call in every lane.
-
-        The hook used to turn any exception into a denial, so one defect below the decision
-        stopped all work everywhere it was installed — #338's shape. It fails open instead:
-        the call is admitted and one line on stderr names the error, which is diagnosis a
-        reader can act on rather than a wall they cannot pass.
-        """
-        event = {'tool_name': 'Bash', 'tool_input': {'command': 'git status --short'},
-                 'cwd': str(ROOT)}
-        for role in ('worker', 'reviewer', 'orchestrator'):
-            with self.subTest(role=role):
-                out, err = run_role_hook(event, role=role,
-                                         injected=RuntimeError('probe: the guard is broken'))
-                self.assertEqual(json.loads(out), {})
-                self.assertEqual(len(err.strip().splitlines()), 1, err)
-                self.assertIn('probe: the guard is broken', err)
-                self.assertIn('RuntimeError', err)
-
-    def test_a_malformed_event_admits_the_call_and_names_the_defect_on_stderr(self):
-        """A host event the hook cannot read is the host's defect, not a reason to deny."""
-        for event in (None, [], {}, {'tool_name': 'Bash'}, {'tool_name': '', 'tool_input': {}},
-                      {'tool_name': 12, 'tool_input': {}},
-                      {'tool_name': 'Bash', 'tool_input': {}},
-                      {'tool_name': 'Bash', 'tool_input': []},
-                      {'tool_name': 'Bash', 'tool_input': 'opaque'},
-                      {'tool_name': 'Bash', 'tool_input': {'command': 12}}):
-            with self.subTest(event=event):
-                out, err = run_role_hook(event, role='worker')
-                self.assertEqual(json.loads(out), {})
-                self.assertEqual(len(err.strip().splitlines()), 1, err)
-        # A non-shell tool carrying an opaque input is well-formed: admitted, and silent.
-        out, err = run_role_hook({'tool_name': 'apply_patch', 'tool_input': 'opaque patch'},
-                                 role='worker')
-        self.assertEqual(json.loads(out), {})
-        self.assertEqual(err, '')
-
-    def test_failing_open_leaves_the_three_rules_and_the_default_branch_push_refusing(self):
-        """Fail-open is the error path only: a rule that fires still denies, and says nothing."""
-        for role, command in (('worker', 'git merge origin/main'),
-                              ('worker', 'git push origin main'),
-                              ('reviewer', 'gh api repos/o/r -X POST'),
-                              ('orchestrator', 'gh pr merge 1 --squash')):
-            with self.subTest(role=role, command=command):
-                out, err = run_role_hook({'tool_name': 'Bash', 'tool_input': {'command': command},
-                                          'cwd': str(ROOT)}, role=role)
-                self.assertEqual(err, '')
-                self.assertEqual(json.loads(out)['hookSpecificOutput']['permissionDecision'],
-                                 'deny')
-
 
 class ZeroConfigurationTest(unittest.TestCase):
-    """The hook decides with nothing to read: no policy, no repository, no network (#326)."""
+    """The engine decides on its arguments alone: no policy, no repository, no network (#326).
 
-    def setUp(self):
-        self.h = module()
-        tmp = self.enterContext(tempfile.TemporaryDirectory(prefix='zero-configuration-'))
-        self.tmp = Path(tmp)
-        self.env = {k: v for k, v in os.environ.items()
-                    if not k.startswith('GIT_') and
-                    k not in ('DEVSTANDARD_ROLE', 'GH_REPO', 'GH_TOKEN', 'GITHUB_TOKEN')}
-        self.env.update(GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_NOSYSTEM='1', LC_ALL='C',
-                        GH_CONFIG_DIR=str(self.tmp / 'gh-config'),
-                        PATH=str(self.tmp) + os.pathsep + os.environ['PATH'])
-        # Every network call fails, in the vocabulary `gh` prints when it reaches no server.
-        failing = self.tmp / 'gh'
-        failing.write_text('#!' + sys.executable + '\nimport sys\n'
-                           'sys.stderr.write("Post \\"https://api.github.com/graphql\\": EOF\\n")\n'
-                           'sys.exit(1)\n')
-        failing.chmod(0o755)
+    #16 moved the carrier onto dsh's `tools/pre-execute`, which subsumes the former
+    three-environment probe (a bare directory, a real repository, and both with the network
+    failing): `tool_decision` takes no path and reads nothing, which the source assertion
+    below pins. What remains is the decision table itself, read straight from the engine.
+    """
 
-    def git(self, at, *args):
-        result = subprocess.run(['git', '-C', str(at)] + list(args), env=self.env,
-                                text=True, capture_output=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return result.stdout.strip()
-
-    def repository(self):
-        """A real clone with a real `origin/main` ref, so `cwd` is inside a repository."""
-        upstream, project = self.tmp / 'upstream', self.tmp / 'project'
-        upstream.mkdir()
-        self.git(self.tmp, 'init', '-b', 'main', str(upstream))
-        for key, value in (('user.email', 'p@example.invalid'), ('user.name', 'Probe')):
-            self.git(upstream, 'config', key, value)
-        (upstream / 'README.md').write_text('probe\n')
-        self.git(upstream, 'add', 'README.md')
-        self.git(upstream, 'commit', '-m', 'found')
-        self.git(self.tmp, 'clone', '--quiet', str(upstream), str(project))
-        return project
-
-    def hook(self, cwd, command, role='worker', tool='Bash', field='command'):
-        event = {'tool_name': tool, 'tool_input': {field: command}, 'cwd': str(cwd)}
-        result = subprocess.run([str(ROOT / 'hooks/pre-tool-use'), '--role', role],
-                                cwd=str(ROOT), env=self.env, input=json.dumps(event),
-                                text=True, capture_output=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads(result.stdout)
-
-    # The same decisions in three environments: a bare directory that is no repository at
-    # all, a real repository, and both with every network call failing.
+    # One row per decision that matters: each role's refusal, the worker's default-branch
+    # `push` stopgap, the words the 2026-09-20 ruling struck out (#425), and ordinary work.
     DECISIONS = (
         ('worker', 'git status --porcelain', True),
         ('worker', 'git push --force-with-lease origin task/x', True),
@@ -1342,12 +1169,12 @@ class ZeroConfigurationTest(unittest.TestCase):
         ('worker', 'git push origin main', False),
         ('worker', 'git merge origin/main', False),
         ('worker', 'gh pr merge 1 --squash', False),
-        # #425: the words that used to refuse these are gone, through the real process.
+        # #425: the words that used to refuse these are gone.
         ('worker', 'git tag -a v1 -m x', True),
         ('worker', 'cargo build --release', True),
         ('worker', 'rm -rf node_modules', True),
         ('worker', 'git worktree remove /srv/lane', True),
-        # The decision the whole issue is about, through the real hook process (#351).
+        # The data a command carries is removed, not judged (#351).
         ('worker', "cat > /tmp/x.py <<'EOF'\nrelease = threading.Event()\nEOF", True),
         ('worker', 'git commit -m "merge the release notes"', True),
         ('reviewer', 'gh pr view 1 --json body', True),
@@ -1361,36 +1188,21 @@ class ZeroConfigurationTest(unittest.TestCase):
         ('orchestrator', 'git merge origin/main', True),
     )
 
-    def decide(self, cwd):
+    def test_every_decision_holds_with_nothing_to_read(self):
+        h = module()
         for role, command, admitted in self.DECISIONS:
-            with self.subTest(cwd=str(cwd), role=role, command=command):
-                result = self.hook(cwd, command, role)
+            with self.subTest(role=role, command=command):
+                reason = h.tool_decision(role, 'bash', {'command': command})
                 if admitted:
-                    self.assertEqual(result, {})
+                    self.assertIsNone(reason)
                 else:
-                    output = result['hookSpecificOutput']
-                    self.assertEqual(output['permissionDecision'], 'deny')
+                    self.assertIsNotNone(reason)
                     # A read that cannot happen can never be the reason, because there is none.
-                    self.assertNotIn('EOF', output['permissionDecisionReason'])
-
-    def test_the_hook_decides_in_a_bare_directory_with_no_repository_at_all(self):
-        bare = self.tmp / 'bare'
-        bare.mkdir()
-        inside = subprocess.run(['git', '-C', str(bare), 'rev-parse', '--is-inside-work-tree'],
-                                env=self.env, text=True, capture_output=True)
-        self.assertNotEqual(inside.returncode, 0, 'the probe directory must be no repository')
-        self.decide(bare)
-
-    def test_the_hook_decides_inside_a_repository_with_the_network_failing(self):
-        self.decide(self.repository())
-
-    def test_a_cwd_that_does_not_exist_still_decides(self):
-        self.decide(self.tmp / 'no-such-directory')
+                    self.assertNotIn('EOF', reason)
 
     def test_nothing_on_the_decision_path_reads_a_policy_a_file_or_the_network(self):
         """The done-check's grep, as an assertion (#326)."""
         source = (ROOT / 'scripts/hard_edges.py').read_text()
-        hook = (ROOT / 'hooks/pre-tool-use').read_text()
         for name in ('settings_for', 'POLICY_PATH', 'devstandard-guards', 'policy_words',
                      'standing_delegation', 'standing_release', 'command_patterns',
                      'required_checks', 'record_logins', 'human_logins', 'authorization_issue',
@@ -1400,7 +1212,6 @@ class ZeroConfigurationTest(unittest.TestCase):
                      'unparsed_orchestrator_reason'):
             with self.subTest(name=name):
                 self.assertNotIn(name, source, f'{name} should be gone with the policy (#326)')
-                self.assertNotIn(name, hook, f'{name} should be gone with the policy (#326)')
         # The whole decision, from the role's words to the answer, reads only its arguments.
         for name in ('def command_only', 'def carries', 'def carries_flag',
                      'def command_refusal', 'def tool_decision'):

@@ -82,24 +82,13 @@ python3 .github/test-dispatch.py
 # Review-packet assembly, green-head admission, publication, and round accounting
 python3 .github/test-review-packet.py
 
-# The dispatched Codex CLI executor (role hook, dispatched brief, MCP admission), using the CLI
-# version pinned in ci.yml; the model provider is a local deterministic fixture.
-python3 .github/test-codex-runtime.py
-# Claude native Agent and CLI roles, using the version pinned in ci.yml.
-python3 .github/test-claude-runtime.py --dispatch-cli --log-dir "${TMPDIR:-/tmp}/devstandard-claude-runtime"
-
 # Guard, authorization, reviewed-head and constructed-rebase probes. Needs 3.11+ (tomllib)
 python3 .github/test-hard-edges.py
 HARD_EDGE_SHARD=0/2 python3 .github/test-hard-edges.py   # One zero-based role word-list sweep shard
-# agents/ frontmatter, tool surface, model and skill bindings against the role sources. Needs PyYAML
-# It is also the generator (ADR 0060/0061): agents/worker.md's body is reference/worker.md followed
-# by reference/harness-claude.md, concatenated byte for byte, so after editing EITHER source run
-# --write. CI runs the check alone and fails on a drifted body.
-python3 .github/check-agents.py
-python3 .github/check-agents.py --write
 
 # The dsh bundle gate: the role rows, the one model anchor, and the byte-identity of each
-# embedded persona against its source page — the dsh successor to check-agents.py's check.
+# embedded persona against its source page — one operative source per role (#16 retired the
+# agent-definition gate whose byte-identity check this replaces).
 # It is also the generator: after editing reference/worker.md or reference/code-review-prompt.md
 # run --write, which rewrites the persona regions in cordis.patch.yml. Needs PyYAML; in CI.
 python3 .github/check-dsh-bundle.py
@@ -116,24 +105,13 @@ python3 .github/check-dsh-guard.py
 # Needs an installed `dsh`, Node and pnpm; the `dsh` CI job installs them and runs it (ADR 0064).
 python3 .github/test-dsh-bundle.py
 
-# 1. Per-artifact hook delivery: inline, the exact byte boundary of one part, multi-part
-#    reconstruction, the degraded read, missing source, lifecycle sources, unsupported environments
-python3 .github/test-session-start.py
-
-# 2. Delivery: every shipped artifact arrives whole through the handlers hooks.json declares.
-#    A page larger than one output is emitted in ordered parts that concatenate to the file's
-#    exact bytes; a page the declared handlers cannot carry degrades to an instructed read and
-#    FAILS this gate. There is no size budget on a role page (ADR 0059).
-#    Carrier history: docs/specs/2026-09-06-core-md-rule-ledger.md (recorded once).
-python3 .github/check-core-budget.py
-
-# 3. no @path references (they force-load at session start)
+# 1. no @path references (they force-load at session start)
 ! grep -rn "@[a-zA-Z0-9_-]*/" reference/ --include='*.md' | grep -v actions/ | grep -v anthropic | grep .
 
-# 4. every ADR amendment block is announced by its status line, in the matching form
+# 2. every ADR amendment block is announced by its status line, in the matching form
 python3 .github/check-adr-index.py
 
-# 5. NOT a CI gate — before merging a PR needing check 1 (see Version bumps below):
+# 3. NOT a CI gate — before merging a PR needing check 1 (see Version bumps below):
 #    Counting all comments passes on a CI-FALLBACK block or a bot note, so match the verdict itself.
 PR=<number>
 test "$(gh api "repos/LeonJoeeee/devstandard/issues/$PR/comments" \
@@ -143,13 +121,13 @@ test "$(gh api "repos/LeonJoeeee/devstandard/issues/$PR/comments" \
 #    Verdicts predating that convention carry headings of their own; on a PR that old, read for
 #    yourself rather than trusting this matcher's silence.
 
-# 6. the bundle's release manifest declares a dotted numeric version (equal to the tag, on release)
+# 4. the bundle's release manifest declares a dotted numeric version (equal to the tag, on release)
 python3 -c 'import json,re; v=json.load(open("package.json"))["version"]; assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", v), v; print("release manifest", v)'
 ```
 
 **The verdict is posted when it arrives, not when you remember.** Five consecutive merges once went
 out with no published verdict, the last two after the diagnosis was already written (issue #118) —
-so knowing the rule was never the safeguard, and command 5 above is the pre-merge check that catches
+so knowing the rule was never the safeguard, and command 3 above is the pre-merge check that catches
 the omission. What replaced remembering is the machinery: `scripts/review-packet start` reserves the
 round as a PR comment *before* the reviewer runs, so an unpublished verdict is a visible reservation
 rather than nothing at all. On the Codex path, its return handler (synchronous with `start --wait`, detached by default) replaces that reservation

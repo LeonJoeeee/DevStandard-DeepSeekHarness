@@ -595,10 +595,11 @@ def tool_decision(role, tool, arguments):
     content whatever words it carries. Only a shell tool supplies command text for the
     role's word list to decide.
     """
-    # Both carriers that are live today: dsh's shell tool is `bash` (model-facing, lowercase),
-    # and the in-tree Claude hook still sends `Bash` until `hooks/` leaves the shipped set
-    # (ADR 0064). The name that goes now is the Claude CLI's exec tool, which nothing sends.
-    if tool not in ('bash', 'Bash'):
+    # The one carrier that is live today: dsh's shell tool is `bash` (model-facing, lowercase),
+    # read at `tools/pre-execute` (ADR 0064). `Bash` was the Claude hook's, and `exec_command`
+    # the Claude CLI's exec tool; both left with their carriers — `hooks/` here (#16) and the
+    # Codex surface (#14) — so nothing sends either name now.
+    if tool not in ('bash',):
         return None
     return command_refusal(role, arguments.get('command', arguments.get('cmd', '')) or '')
 
