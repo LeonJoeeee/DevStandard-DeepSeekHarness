@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 sys.dont_write_bytecode = True
 from hard_edges import (Refusal, api, compare_rebase, protection_check, require, merge_check,
-                        round_check, project_repo, codex_hook_config, protection_read_refusal,
+                        round_check, project_repo, protection_read_refusal,
                         operative_review_comments)
 
 
@@ -77,8 +77,6 @@ def main():
     rounds.add_argument('--project', type=Path, default=Path.cwd())
     rounds.add_argument('--repo', required=True)
     rounds.add_argument('--pr', type=int, required=True)
-    config = sub.add_parser('codex-config')
-    config.add_argument('--role', choices=['worker','reviewer'], required=True)
     args = parser.parse_args()
     if args.command == 'compare':
         result = compare_rebase(args.project, args.old_base, args.old_head, args.base, args.head)
@@ -92,9 +90,6 @@ def main():
         rows = operative_review_comments(rows)
         pr = api(f'repos/{args.repo}/pulls/{args.pr}')
         result = round_check(rows, pr['head']['sha'])
-    elif args.command == 'codex-config':
-        print(codex_hook_config(Path(__file__).resolve().parents[1], args.role))
-        return
     else:
         # The check names come from the command line and nowhere else (#326). Read-only, none
         # is fine: it verifies protection's shape. `--apply` PUTs the contexts, so an empty
