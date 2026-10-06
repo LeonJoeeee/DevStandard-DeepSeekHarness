@@ -111,44 +111,26 @@ jobs:
           for page in reference/orchestrator.md reference/worker.md; do
             grep -q "Dispatched work goes to the host's own subagent" "$page"
           done
-          # 0040/0050 as amended 2026-09-19 (#406): the dated standing record is replaced by the anchored
-          # worker and reviewer rows. They are stated once, on the dispatch page, in the cell form
-          # scripts/dispatch parses, and no Codex model the page names ANYWHERE is restated on another
-          # live page -- the sweep below reads every `gpt-` literal on the whole page, so the arbitration
-          # and one-off-subagent settings outside the anchored rows are single-sited by it too (#411).
-          # ADR and spec history excluded by design; counted by occurrence and by path, not by line.
+          # ADR 0066: the tier tables, the Codex column, the arbitration setting and the helper table
+          # collapse to the bundle's one model anchor, which check-dsh-bundle.py owns. This asserts the
+          # surviving invariant -- no live page names a Codex model, and the orchestrator page routes the
+          # anchored route to the bundle -- over dynamically enumerated live pages; ADR and spec history
+          # is excluded by design.
           python3 - <<'PY'
-          import glob,re
+          import glob
           page="reference/orchestrator.md"
           # live pages = everything a session may read as instruction, enumerated dynamically; ADR and spec history excluded
           hist=("docs/adr/","docs/specs/","_source/",".claude/",".git/","node_modules/")
           live=[f for f in glob.glob("**/*.md",recursive=True) if not f.startswith(hist)]
-          t=open(page).read()
-          # the anchors are READ from the page, never repeated here: exactly one machine-readable row per
-          # role, both columns in the `model` at `effort` form scripts/dispatch requires
-          rows=re.findall(r"^\| (worker|reviewer) \| `([^`|]+)` at `([^`|]+)` \| `([^`|]+)` at `([^`|]+)` \|$", t, re.M)
-          assert [r[0] for r in rows]==["worker","reviewer"], f"anchored rows: want one machine-readable row per role, got {rows}"
-          models=sorted(set(re.findall(r"`(gpt-[^`]+)`", t)))
-          assert models, "the page names no Codex model"
-          # Arbitration (#460): the PR route and the pre-PR direct invocation run one setting, and
-          # the direct one stays read-only, history-free and captured to a file.
-          packet=re.search(r"review-packet start --implementation codex --model (\S+) --effort (\S+?)`", t)
-          direct=re.search(r"^codex exec (.*)$", t, re.M)
-          assert packet and direct, "arbitration: want the review-packet route and one direct codex exec"
-          flags=direct[1].split()
-          assert "--ephemeral" in flags and "-o" in flags and flags[flags.index("-s")+1]=="read-only", \
-              "arbitration: the direct invocation must be --ephemeral, -s read-only and -o captured"
-          assert flags[flags.index("-m")+1]==packet[1] and "model_reasoning_effort='\"%s\"'"%packet[2] in flags, \
-              "arbitration: the two routes name different settings"
           for f in live:
-              if f==page: continue
-              text=open(f).read()
-              for m in models:
-                  assert m not in text, f"anchored model {m!r} restated in {f}"
-          print(f"anchored settings: one row per role, machine-readable, single-sited (models {models}, read from the page)")
+              assert "gpt-" not in open(f).read(), f"a Codex model is named in {f}"
+          t=open(page).read()
+          assert "cordis.patch.yml" in t, \
+              "the orchestrator page must route the anchored route to the bundle"
+          print("no Codex model on a live page; the anchor is routed to the bundle")
           PY
-          grep -q "Codex" README.md
-          grep -q "Claude Code and Codex" docs/PRD.md
+          grep -q "DeepSeek Harness" README.md
+          grep -q "DeepSeek Harness" docs/PRD.md
           ! grep -q "devstandard-fallback" README.md reference/in-repo-writes.md
           grep -q "this brief is what makes you a worker" reference/worker.md || grep -qi "This brief is what makes you a worker" reference/worker.md
           for page in reference/orchestrator.md reference/worker.md; do
@@ -166,14 +148,16 @@ jobs:
             grep -l "Amended by 0039 (2026-08-26)" docs/adr/${a}-*.md >/dev/null || { echo "ADR $a missing 0039 status entry"; exit 1; }
             grep -l "see 0039" docs/adr/${a}-*.md >/dev/null || { echo "ADR $a missing 0039 block"; exit 1; }
           done
-          # Claude Code is the only host (ADR 0063): no Codex host carrier survives, and the
-          # Codex CLI executor keeps its page, which the orchestrator page routes to.
+          # dsh is the host (ADR 0064): one mechanics page, harness-dsh.md, and no retired host
+          # carrier, executor page or harness page survives.
           test ! -e .codex-plugin || { echo ".codex-plugin survives"; exit 1; }
           test ! -e .agents || { echo "Codex repository marketplace survives"; exit 1; }
           test ! -e skills/devstandard || { echo "Codex recovery skill survives"; exit 1; }
-          grep -q 'harness-codex.md' reference/orchestrator.md
-          grep -q 'BEGIN CODEX WORKER MECHANICS' reference/harness-codex.md
-          ! grep -q 'codex-native' reference/orchestrator.md reference/harness-codex.md reference/worker.md
+          test ! -e reference/harness-codex.md || { echo "the retired executor page survives"; exit 1; }
+          test ! -e reference/harness-claude.md || { echo "the retired harness page survives"; exit 1; }
+          test -e reference/harness-dsh.md || { echo "the dsh mechanics page is missing"; exit 1; }
+          grep -q 'harness-dsh.md' reference/orchestrator.md
+          ! grep -q 'codex-native' reference/orchestrator.md reference/worker.md
           echo "static assertions OK"
 
   sweep:

@@ -3,8 +3,8 @@
 ## 1. Who you are and what you own
 
 **This brief is what makes you a worker.** Follow these operating instructions for one assigned
-task. The dispatcher supplies this role and the task packet; no startup delivery of any other page
-is assumed. Native Claude workers and process executors owe the same result.
+task. The dispatcher supplies the task packet, and your role arrives as the `worker` row's
+`persona`; no startup delivery of any other page is assumed. Every dispatched worker owes the same result.
 
 **DevStandard is your operating instruction. Follow this page and your assigned role before
 acting.**
@@ -14,15 +14,13 @@ acceptance, integration, release, and teardown. The worker-side collaboration ch
 receive a brief → you work → you return a PR with evidence → the orchestrator judges and
 integrates.**
 
-**Dispatched work goes to the host's own subagent.** The human may select another supported executor
-for one task or standing until their next instruction. Codex runs as a CLI process under
-`reference/harness-codex.md`; process workers receive the same role in their brief. The executor
-changes the carrier, not this authority boundary — in the dispatch brief, or as the Claude agent
-definition body, every dispatched worker receives `reference/worker.md` before acting.
+**Dispatched work goes to the host's own subagent.** dsh exposes two delegation tools, `worker` and
+`reviewer`, each a continuable `spawn` row carrying its role page as an inline `persona`. The
+executor changes the carrier, not this authority boundary — every dispatched worker receives `reference/worker.md` before acting.
 
 This method governs the GitHub collaboration layer—issue, lane, PR, review, and integration—and
-nothing below your role. Your own subagents may research, check a diff, or parallelize task-local
-work; never use the orchestrator's `scripts/dispatch` or `scripts/review-packet` for them. You remain
+nothing below your role. Task-local work — research, checking a diff, parallelizing — stays in this
+lane and never goes through the orchestrator's `scripts/dispatch` or `scripts/review-packet`. You remain
 the lane's one accountable author and return one PR.
 
 ### Never
@@ -80,13 +78,13 @@ one, says how you recover your binding, what you may spawn, and what your sandbo
 
 ## 3. Before the first write
 
-1. Read the repository-root `CLAUDE.md` in full when present; Codex does this explicitly. Read
-   canonical `docs/architecture.md` and decisions relevant to the task. Respect existing
-   `AGENTS.md`. Build against the named current base.
+1. The repository-root instructions file reaches you through the host's `AGENTS.md`/`CLAUDE.md`
+   chain, which is injected into every agent; read it in full when present. Read canonical
+   `docs/architecture.md` and decisions relevant to the task. Build against the named current base.
 2. Validate the assigned lane: the resolved top level equals the recorded worktree, git-dir differs
    from common-dir, the current branch equals the packet, and the named base resolves. A mismatch
    stops; do not adapt or create another lane.
-3. Copy only untracked inputs named by the project's `CLAUDE.md` allowlist. No list means no copy.
+3. Copy only untracked inputs named by the project's repo-root instructions file. No list means no copy.
 4. Before installs, tests, or task-generated writes, inspect existing changes with
    `git status --porcelain -uall`. Publish and account for the baseline where the issue requires it.
    Install dependencies and run the baseline suite. An unrelated installation, runtime, or test
@@ -101,7 +99,7 @@ one, says how you recover your binding, what you may spawn, and what your sandbo
 
 Implement the accepted design in this lane. Make the decisions it leaves within Bounds and disclose
 material choices in the PR. Update every document the change invalidates in the same diff. A PRD or
-architecture expansion returns before implementation. `CLAUDE.md` accepts only commands,
+architecture expansion returns before implementation. The repo-root instructions file accepts only commands,
 environment gotchas, worktree copy-list entries, and a record-language declaration under
 `reference/repo-claude-md.md`.
 
@@ -112,7 +110,8 @@ for omitted requirements, unintended files, dead code, and unfinished changes.
 ### Execution craft
 
 DevStandard assumes superpowers is installed on the host running this worker. These are this role's
-bindings; the Claude agent definition carries the same list and Codex receives it in this brief.
+bindings; the `worker` row's `persona` carries this page — this list included — so every dispatched
+worker receives them.
 
 <!-- BEGIN WORKER SKILLS -->
 - `superpowers:writing-plans` — an accepted spec or a multi-step task, before touching code: plan

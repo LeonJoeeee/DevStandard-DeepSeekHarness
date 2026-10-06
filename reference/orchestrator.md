@@ -2,7 +2,7 @@
 
 ## 1. Who the actors are and what each owns
 
-This is the complete instruction for a project's Claude Code orchestrator. DevStandard
+This is the complete instruction for a project's dsh orchestrator. DevStandard
 exists to return the human's scarce time; its machinery reserves that time for direction and
 judgment. The orchestrator is an event loop, not a worker for one lane.
 
@@ -19,8 +19,8 @@ the human's handover through that last step.
   authorizes irreversible actions. Agents run git and publish the record.
 - **Orchestrator:** one main session per project; owns issue preparation, dispatch, observation,
   acceptance, integration, cleanup, and an authorized release.
-- **Worker:** owns one task, branch, worktree, and evidence-bearing PR. In the dispatch brief, or as
-  the Claude agent definition body, every dispatched worker receives `reference/worker.md` before
+- **Worker:** owns one task, branch, worktree, and evidence-bearing PR. As the `worker` delegation
+  row's `persona`, every dispatched worker receives `reference/worker.md` before
   acting. Dispatch never promotes a worker to orchestrator.
 - **Reviewer:** independently and read-only judges the Goal and Floor under
   `reference/code-review-prompt.md`; it has no implementation craft role. A conflict resolver is a
@@ -125,7 +125,7 @@ worker's whole brief:** the worker sees its ordered record, not the conversation
 conclusions are guessed or lost. Later conclusions go in comments, never body rewrites; every
 launch fetches the record again.
 
-Before task work read root `CLAUDE.md`, `docs/architecture.md`, and relevant decisions; use a
+Before task work read the repo-root instructions file, `docs/architecture.md`, and relevant decisions; use a
 current appropriate base. An issue has nonempty `## Goal`, `## Bounds` (authorized scope and
 required finish), and `## Done-check`, with no unresolved template slots. Use executable checks
 where they establish the outcome. Prefer removal or guidance when it solves the problem. A
@@ -165,90 +165,60 @@ branch/path through `git worktree list`; never invent a second task identity to 
 stale registration.
 
 A new worktree carries tracked files only. Copy untracked inputs solely from the allowlist in the
-project's `CLAUDE.md`; no list means no copy. Share documented dependency caches where suitable and
+project's repo-root instructions file; no list means no copy. Share documented dependency caches where suitable and
 parameterize parallel runtime names. The worker owns its baseline and initial test under its role
 page.
 
 ### Dispatching to an executor
 
-Use the installed plugin's fixed dispatcher (Python 3.9+, `git`, authenticated `gh`) from the target
+Use the bundle's fixed dispatcher (Python 3.9+, `git`, authenticated `gh`) from the target
 checkout; it assembles the whole brief from the issue's ordered record and the current role source.
 
-**Dispatched work goes to the host's own subagent.** The human's instruction selects another
-supported executor for one dispatch or standing until their next instruction. The choice lives with
-the orchestrator, not in a project file. The default is `--implementation claude`; Codex runs as a
-CLI process, `--implementation codex`, for a worker or an independent read-only gating reviewer
-under `reference/harness-codex.md`. Claude CLI is an explicit worker process, not a qualified gating
-reviewer. Native workers inherit host permissions; Codex CLI workers receive an OS sandbox scoped to
-their lane. Never use a bypass-all-sandboxing mode. Report a blocked required action instead of
-loosening the sandbox.
+**Dispatched work goes to the host's own subagent.** dsh exposes two delegation tools — `worker` and
+`reviewer` — each a continuable `spawn` row carrying its role page as an inline `persona`, so the
+role and its fixed model route travel with the child. There is no other executor: no CLI process
+and no second harness. The dispatcher never launches anything itself. It prepares the lane and
+writes an `agent-spawn.json` instruction naming the tool, a description and the brief pointer; the
+orchestrator calls that tool and records the returned child id on the issue, which is the evidence
+one child existed. A shell cannot call a session tool, so a prepared instruction is not a running
+worker.
 
-Codex CLI dispatch's hook-trust bypass is invocation-wide, not limited to the fixed role hook.
-Before dispatch, vet every effective enabled hook source, including installed plugin hooks. The
-bypass does not persist trust, and Claude dispatch never receives it.
+An in-process child inherits the session's permissions and cwd; dsh adds no per-worker OS sandbox.
+Lane isolation is the worktree, the role hook, and independent review, and the reviewer row's
+`toolFilter` removes the write tools from its prompt and rejects their execution. Never widen a
+role's tool surface to work around a refusal; report a blocked required action instead.
 
 Gating review or design challenge uses a fresh independent read-only executor without session
-history. A hard requirement for Claude capabilities selects Claude.
+history — the `reviewer` row, fresh per commission.
 
 #### When it is not there
 
-If the human-selected executor is missing, unauthenticated, or errors, another implementation is a
-fallback only when it preserves the role and gate properties. Re-dispatch explicitly and disclose
-the departure; the dispatcher never substitutes silently. Where no available executor preserves a
-gate's properties—gating review or a design challenge—that gate is blocked, never lowered.
+The method ships one executor, so there is no second to fall back to. If a delegation tool is
+missing or the child errors, re-dispatch explicitly and disclose the departure; the dispatcher never
+substitutes silently, and a gate whose executor cannot run is blocked, never lowered.
 
 #### Model and effort
 
-The method has three agents. The human picks the orchestrator's model by hand. The worker and the
-reviewer are anchored: model and effort are fixed for the role, not routed per task. Claude `opus`
-and Codex `gpt-6-astra` are one tier, as are Claude `sonnet` and Codex `gpt-6-sol`; `gpt-6-luna` is
-the tier below.
+The method has three agents. The human picks the orchestrator's model by hand; it is the session
+default, not anchored here.
 
-| Role | Codex | Claude |
-|---|---|---|
-| worker | `gpt-6-astra` at `high` | `opus` at `high` |
-| reviewer | `gpt-6-astra` at `high` | `opus` at `high` |
+The worker and the reviewer are anchored: one model at one effort for every dispatched role, written
+once as the two delegation rows' `agentOptions` in the bundle's `cordis.patch.yml`. That is the only
+site; the dispatcher reads the anchor from there, and `reference/harness-dsh.md` tells each worker
+the same. There are no tiers, no per-kind routing and no helper table.
 
-`scripts/dispatch` reads those two rows, so keep the cell form. The Codex column is the equal-tier
-executor a human selects, and the disclosed re-dispatch (When it is not there) when Claude is
-missing, erroring or out of quota. Arbitration — a genuine dilemma, an irreversible judgment, an
-architecture-level acceptance — takes Codex `gpt-6-astra` at `max`, read-only from this session. It
-informs the decision and does not make it: a genuine dilemma or irreversible judgment still goes to
-the human (the stuck-work ladder below). With a PR, commission it through the Codex reviewer path:
-`review-packet start --implementation codex --model gpt-6-astra --effort max`. Before a PR exists,
-run a fresh, history-free Codex process from the checkout with the question and its evidence on
-stdin, and post the captured answer on the issue as the durable record:
-
-```sh
-codex exec --ephemeral -s read-only -m gpt-6-astra -c model_reasoning_effort='"max"' -o <session-scratch>/answer.md - < <session-scratch>/question.md
-```
-
-A helper — a one-off subagent any role spawns for its own task — is neither anchored role and never
-goes through `scripts/dispatch` or `scripts/review-packet`. It always uses its own harness's
-built-in subagent, never the other harness's, with the model its work takes:
-
-| Helper's work | Codex | Claude |
-|---|---|---|
-| Its conclusion directly decides a merge or a design (checking a worker's diff, challenging a design) | `gpt-6-astra` at `high` | `opus` |
-| Ordinary judgment (research, checking) | `gpt-6-sol` at `high` | `sonnet` |
-| Mechanical (scans, first-pass triage, evidence gathering, fixed-field extraction, lists, format conversion) | `gpt-6-luna` at `max` | `sonnet` |
-
-A Claude helper's effort inherits its caller's. Each role is told this where it already reads:
-`reference/harness-claude.md` and `agents/reviewer.md` carry the Claude column, and dispatch reads
-the Codex column into a Codex packet and sets Codex's default subagent to the ordinary-judgment row,
-so keep this table's cell form too.
+A helper — a one-off subagent a role might use for its own task — is neither anchored role and never
+goes through `scripts/dispatch` or `scripts/review-packet`. On dsh a child cannot itself delegate, so
+a role that needs task-local help does that work in its own lane; the anchored route is the
+dispatched roles' alone.
 
 Bulk repetitive work — building a retrieval index or a knowledge graph, batch extraction and
 tagging — is not agent work: run a script against a cheap model endpoint, named in the needing
-project's `CLAUDE.md`. Counting, sorting, hashing and other deterministic operations take a script,
-not a model.
+project's instructions file. Counting, sorting, hashing and other deterministic operations take a
+script, not a model.
 
-A gating review never runs below the tier that produced the work. Work that returns stuck changes
-one thing per attempt: add missing context, raise effort, raise the model, cut the task smaller,
-then take a genuine dilemma or irreversible judgment to the human. On Claude, effort is set only in
-an agent definition's frontmatter — the Agent tool takes `model` per call and no effort, and an
-undefined effort inherits the session's. A project's `CLAUDE.md`, the issue, or an explicit
-`--model` or `--effort` flag overrides an anchor for that dispatch.
+Work that returns stuck changes one thing per attempt: add missing context, cut the task smaller,
+then take a genuine dilemma or irreversible judgment to the human.
 
 #### Fixed dispatcher
 
@@ -259,8 +229,6 @@ undefined effort inherits the session's. A project's `CLAUDE.md`, the issue, or 
 <plugin>/scripts/dispatch 123 --adopt --base origin/main --branch <existing-branch> --worktree <existing-worktree> --pr 124
 <plugin>/scripts/dispatch 123 --purpose reviewer --packet <complete-review-packet>
 <plugin>/scripts/dispatch 123 --cleanup --pr 124
-# Codex CLI worker
-<plugin>/scripts/dispatch 123 --purpose worker --base origin/main --implementation codex
 ```
 
 Fetch the named base first. New identities default deterministically to `task/ISSUE-TITLE` and
@@ -268,30 +236,21 @@ Fetch the named base first. New identities default deterministically to `task/IS
 continuation requires `--brief`. `--help` carries the remaining flag contracts, and refuses rather
 than guessing when one is missing.
 
-For a process executor inside a bounded tool invocation, use `--wait` and keep that same invocation
-alive until it returns. Only the supervisor's completion marker reports an observed exit; `--help`
-carries the marker, lock and PID semantics and what to retain until lane cleanup. Read the returned
-output itself.
+Dispatch prepares the lane and writes an `agent-spawn.json` instruction, never a running worker: the
+tool to call (`worker`, or `reviewer` with a `--packet`), a description, the brief pointer and
+`run_in_background`. Call that tool with the recorded arguments, then record the returned child id
+on the issue — that record is the evidence one child existed, and no flag attests it. The child's
+model and effort come from its row, so no route travels in the instruction.
 
-Reconcile a lost run explicitly, on originating-host inspection and durable evidence whose
-preconditions `--help` states:
-
-```sh
-<plugin>/scripts/dispatch 123 --reconcile-lost /exact/recorded/scratch/brief.txt --reason 'Originating-host inspection and result' --evidence https://github.com/owner/repo/issues/123#issuecomment-ID
-```
-
-It resolves one CLI run without inventing an exit or output. If inspection is unavailable, remain
-blocked. A live or uncertain executor never permits a second writer or cleanup.
-
-Native dispatch prepares a receipt, not a running worker: an Agent-tool instruction whose fields
-`--help` carries. Pass it to the Agent tool and record the returned handle; `--resume HANDLE`
-reaches that same finished child, and a missing handle means a fresh executor, never an invented
-one. The dispatcher observes no native handle, so record each returned handle on the issue: that
-record is the evidence one finished, and no flag attests it. A live CLI run still blocks reuse.
+A continuation reaches the same child: `--resume <child-id>` writes a `send_message {agent_id,
+message}` instruction instead of a fresh spawn, and reviewers are always fresh. The dispatcher
+observes the child at the tool boundary rather than through a detached supervisor, so a child whose
+end is unknown never permits a second writer or cleanup.
 
 #### What it returns
 
-The process output file is the worker's return channel; keep briefs and outputs in session scratch
+The child returns to its caller: a worker's result is the PR and evidence it hands back, and a
+reviewer's whole verdict returns to you for publication. Keep briefs and outputs in session scratch
 and publish durable evidence on the issue or PR. Git author credentials do not identify the
 executor, so the dispatch packet supplies the required commit trailer; review output names its
 reviewer.
@@ -326,17 +285,15 @@ alone defines judging: Goal and both Floors decide readiness. Record failed atte
 ```sh
 <plugin>/scripts/review-packet assemble 124 --issue 123 --architecture-level no --output <session-scratch>
 <plugin>/scripts/review-packet start 124 --issue 123 --architecture-level no --output <session-scratch>
-# Codex CLI reviewer
-<plugin>/scripts/review-packet start 124 --issue 123 --architecture-level no --output <session-scratch> --implementation codex
 <plugin>/scripts/review-packet status 124 --issue 123
-# Claude reviewer, after invoking the returned Agent instruction
+# after calling the `reviewer` tool the returned instruction names
 <plugin>/scripts/review-packet publish 124 --issue 123 --attempt <comment-id> --verdict <verdict-file>
 <plugin>/scripts/review-packet fail 124 --issue 123 --attempt <comment-id> --reason '<why no reviewer launched>'
 <plugin>/scripts/review-packet rule 124 --issue 123 --decision continue --reason '<blocking goal gap or missing evidence>'
 ```
 
-For Claude, `start` returns the Agent instruction; invoke it and publish the whole result with
-`publish --attempt ID --verdict FILE`.
+`start` reserves the round, prepares the `reviewer` delegation and returns its instruction; call
+`reviewer`, then publish the whole result with `publish --attempt ID --verdict FILE`.
 
 Assembly admits only a head whose observed checks pass and refuses an assembly race; `--help`
 carries what it pins, captures and requires. A pin, diff form or slot it cannot produce is reported
@@ -347,7 +304,7 @@ reviewer's fallback slot; every other review leaves it `NONE`. A returned verdic
 reservation and remains attached to the reviewed head; partial or oversized output never becomes a
 verdict.
 
-Returned verdicts consume rounds, including malformed and Floor-failing responses; a process that
+Returned verdicts consume rounds, including malformed and Floor-failing responses; a child that
 returned no verdict does not. `review-packet` counts them and warns past the recorded cap; nothing
 refuses on the count. Rule when another round would be pointless — findings of the same shape round after
 round, which the reviewer reports as non-convergence — rather than when a number is reached.
@@ -358,10 +315,9 @@ or `change-route`; directional or human-touchpoint rulings require durable human
 There is no spend field or per-dispatch approval.
 
 A reservation may be marked failed where no reviewer verdict can exist: its start stopped before
-dispatch, or its run was reconciled lost and retained no output. Publication releases every other
-attempt, including one whose supervisor recorded that it never started the executor. On restart use
-`status`, which names the command for the reservation in hand; recover publication from retained
-output rather than launching another reviewer.
+any child was named. Publication releases every other attempt, including one whose start stopped
+before it named a child. On restart use `status`, which names the command for the reservation in
+hand; recover publication from the returned verdict rather than launching another reviewer.
 
 #### Two narrow exceptions to re-running check 1
 
@@ -421,18 +377,19 @@ substance is unchanged; otherwise review again.
 
 #### The role hook
 
-The role hook reads a shell command's own text, with quoted strings and here-document bodies
-removed, matches whole words, and never parses grammar or reads file content or non-shell tool
-names. It refuses three things: a worker's `merge`, the orchestrator's `gh pr merge`, which points
-here, and a reviewer's `gh api` write flags (`-X`, `--method`, `-f`, `-F`, `--input`). One rule
+The role hook rides the host's `tools/pre-execute` and reads a shell command's own text, with
+quoted strings and here-document bodies removed, matches whole words, and never parses grammar or
+reads file content or non-shell tool names. It refuses three things: a worker's `merge`, the
+orchestrator's `gh pr merge`, which points here, and a reviewer's `gh api` write flags (`-X`,
+`--method`, `-f`, `-F`, `--input`). One rule
 stands beside them until `guard protection --apply` makes it GitHub's refusal instead—a worker
 `push` that also names `main` or `master`. Everything else is admitted, a local merge, a tag, a
 release build, a force-push, branch and worktree deletion and a recursive `rm` included, because a
 word stays only where the act is irreversible and no other layer stops it: release authorization is
-prose, reviewer read-only is the agent definition's writer denial and the Codex sandbox, and lane
+prose, reviewer read-only is the `reviewer` row's write-tool denial, and lane
 teardown is reversible. It guards the ordinary case only—obfuscation, interpreter bodies, runtime
 data, spawned tools, and MCP actions lie outside it—so the merge guard, server protection, and
-available OS sandbox carry the remaining hard layers.
+the reviewer row's tool denial carry the remaining hard layers.
 
 #### Branch protection
 
@@ -466,11 +423,11 @@ Remove the worktree before its branch, then prune. The agent that integrates the
 workers leave lanes in place.
 
 The version bump rides the change PR, with the semver call in its description; disagreement is a
-Note. An unavoidable bare bump confined to all synchronized declared fields needs no issue or check
-1—CI lockstep is its review—but still uses the guard.
+Note. An unavoidable bare bump confined to the release manifest's version field needs no issue or
+check 1—the release-manifest version check is its review—but still uses the guard.
 
 Release only under the human's words or standing delegation, which only they grant or withdraw. A
-major release needs explicit direction. Keep release manifests in lockstep at the next version
+major release needs explicit direction. Keep the release manifest at the next version
 above current main, perform the authorized release after cleanup, and report the result.
 
 ## 4. Interacting with the human
@@ -518,7 +475,7 @@ action.
 **Direct edits:** before writing, read project operations, architecture, and relevant decisions;
 inspect existing changes; admit documentation through `reference/in-repo-writes.md`; and place
 files through `reference/where-it-goes.md`. Update invalidated guidance, keep task state on the
-issue/PR, and drive checks and bot findings as the PR owner. `CLAUDE.md` accepts only commands,
+issue/PR, and drive checks and bot findings as the PR owner. The repo-root instructions file accepts only commands,
 environment gotchas, worktree copy-list entries, and record-language declarations. Worker craft
 bindings are optional for the orchestrator's small direct edits.
 
@@ -527,5 +484,5 @@ repository requires an explicit handoff before changes. Never invent an outside-
 destination. Never commit or publish secrets; establish
 an authorized destination for confidential data, persistent state, and release deliverables, and a
 durable home before destroying a sole copy. Code, documentation, and GitHub records use English
-unless root `CLAUDE.md` declares otherwise. For non-English records or translations, read
+unless the repo-root instructions file declares otherwise. For non-English records or translations, read
 `reference/repo-claude-md.md`.

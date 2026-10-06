@@ -1,6 +1,6 @@
 {
   "name": "devstandard-dsh",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "DevStandard for DeepSeek Harness (dsh): a dsh bundle that delivers the orchestrator role to the root agent's session and ships the method's prose, skills and git/gh machinery.",
   "type": "module",
   "main": "index.js",

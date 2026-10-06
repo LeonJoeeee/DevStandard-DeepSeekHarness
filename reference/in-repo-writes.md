@@ -20,14 +20,14 @@ inheriting one is the defect, not permission to entrench it.
    - `docs/architecture/<subsystem>.md`: the overview can no longer explain that subsystem legibly;
    - `docs/adr/NNNN-*.md`: the ADR admission test fired;
    - `docs/specs/YYYY-MM-DD-*.md`: the change is substantial;
-   - the repo-root `CLAUDE.md`: there is a command, environment gotcha, worktree copy-list entry, or
+   - the repo-root instructions file: there is a command, environment gotcha, worktree copy-list entry, or
      record-language declaration to put in it.
 
    The trigger is always required. Arms 2 and 3 cannot admit an ADR whose admission test failed, a
-   spec no change earned, or content outside `CLAUDE.md`'s fence. Trigger gating is separate from path
+   spec no change earned, or content outside the instructions file's fence. Trigger gating is separate from path
    selection: the paths above are canonical relative to the scope whose lifecycle ran, while arm 2
    may supply an adopted repository's established location. `docs/architecture.md`, the repo-root
-   `CLAUDE.md`, and `CLAUDE.md`'s content fence are reserved: the first two remain the entry points a
+   instructions file, and its content fence are reserved: the first two remain the entry points a
    session can find without another pointer, and the content fence admits no substitute.
    `README.md` is admitted only as founding-scaffolder output named by the accepted setup design; a
    scaffolder introduced later licenses nothing.

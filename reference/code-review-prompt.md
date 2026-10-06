@@ -155,8 +155,8 @@ Ready to merge is decided by the Goal verdict and Floor only.
 ## Output format
 Open with one line, verbatim in shape: "Reviewer: {REVIEWER_IDENTITY} — reviewed
 {HEAD_SHA}" — the agent, the model and effort exactly as invoked, the mode, and
-the head you reviewed (e.g. "Codex, <model> at <effort>, read-only — reviewed
-<sha>" or "Claude subagent, opus at high, read-only — reviewed <sha>"); the record names the
+the head you reviewed (e.g. "dsh subagent, <model> at <effort>, read-only — reviewed
+<sha>"); the record names the
 reviewer and the diff it judged. After that identity line, output exactly these three sections:
 ### Goal verdict
 [Yes | No] — grounds, including whether the PR's claimed commands and outputs were checked against

@@ -27,7 +27,7 @@ structure in this project — see the existence criterion at the end.
 
 1. **The GitHub collaboration flow** (issues / PRs / review / CI): the structure human software
    development has already validated; machines simply reuse it.
-2. **git worktrees, OS-level sandboxes, branch protection**: parallel isolation and enforcement,
+2. **git worktrees and branch protection**: parallel isolation and integration enforcement,
    natively available, requiring only configuration.
 3. **The superpowers skill library**: mature working methods — test-driven development,
    systematic debugging, requirements clarification — bound into the workflow per role: the
@@ -144,24 +144,19 @@ always stops for the human's authorization before anyone performs it.
 
 ## 5. Implementation
 
-Claude Code and Codex each ship their own harness — sessions, tools, permissions, sandboxes. But
-on the native harness alone, agents will not run the workflows of section 4: the native layer has
+DeepSeek Harness ships sessions, tools and permissions. But
+on it alone, agents will not run the workflows of section 4: the native layer has
 no notion of roles, no dispatch-and-acceptance protocol, and no concept of multi-agent parallel
 collaboration.
 
 This project therefore adds a **supplementary harness** on top of the native one. The available
 building blocks:
 
-- **hooks** — inject instructions at fixed points in the session lifecycle (e.g. delivering the
-  working method at session start);
+- **bundle rows** — register a root-only system-prompt section, the delegation tools, and a
+  tool-interception listener;
 - **skills** — mature methods invoked at the matching workflow step;
-- **native subagents** — Claude role definitions deliver the task and explicit model settings;
-  host support determines tool and permission controls;
-- **external agent processes** — the Claude Code main session can invoke the Codex or Claude CLI
-  for worker duty, with the role in the dispatch prompt and independently managed process
-  lifetime. Codex CLI supplies an OS-enforced role sandbox and can serve as a gating reviewer;
-  Claude CLI workers use host/tool permissions and their assigned worktree, without claiming the
-  same sandbox;
+- **native subagents** — dsh's `worker` and `reviewer` delegation rows deliver the role text as an
+  inline `persona` and fix the model, effort and tool surface;
 - **scripts** — mechanical steps (dispatch, review-packet assembly) made fixed;
 - and **hybrids** of the above.
 
@@ -172,8 +167,9 @@ reliably realize the workflows of section 4.**
 skill and left to trigger on its own description almost never fires — measured repeatedly at ~0% on
 real development tasks. A method that does not load is not in force, and problem 5 of section 1 is
 precisely the fresh session that does not know the conventions it is breaking. Delivery therefore
-cannot rest on an agent electing to read: the method is injected by a session-start hook that fires
-whether or not the agent judges it relevant.
+cannot rest on an agent electing to read: the method is delivered by the harness's own mechanism — a
+root-scoped system-prompt section, and each role's inline `persona` — whether or not the agent
+judges it relevant.
 
 **This supplementary harness is, in essence, context engineering: it decides what each agent
 sees, when, and in what form — working method, role identity, task content, available skills.**
@@ -188,9 +184,10 @@ load implementation methods. The two sets share only the workflow contract itsel
 where the roles interlock and must know each other (who delivers what, who accepts, who merges).
 
 Five engineering sub-problems have been identified in building this layer: **delivery** (how the
-constraints are guaranteed to reach every agent), **lifetime** (dispatched processes must survive
-independently of the session), **asymmetry** (the two native environments differ in capability, so
-one role needs two bindings), **enforcement** (pure prompt constraints fail silently; some edges
+constraints are guaranteed to reach every agent), **lifetime** (dispatch returns at once, and a
+child's completion is observed at the tool boundary rather than trusted), **asymmetry** (the
+reviewer's read-only posture is a tool-level denial where the worker's isolation is the worktree),
+**enforcement** (pure prompt constraints fail silently; some edges
 must rest on native enforcement), and **observability** (how the orchestrator learns a worker's
 true state rather than its self-report). These five belong to the architecture document; this
 document does not expand on them.
@@ -211,10 +208,10 @@ Success is defined as: the problems of section 1 no longer occur. Item by item:
    decision in section 2; whatever cannot be traced has in fact been deleted.
 
 Those six are judged on outcomes. **Three gates sit under them**, decidable by a machine rather than
-by a reading, and it is these that a release is held to: in a fresh session the hook fires and the
-working method is in context before the agent's first action; on-demand loading holds, so the rest of
-the method enters a context only when something explicitly reads it; and the always-on payload stays
-inside its declared budget. Failing any of the three means the harness of section 5 was not
+by a reading, and it is these that a release is held to: in a fresh session the method is in context
+before the agent's first action; on-demand loading holds, so the rest of
+the method enters a context only when something explicitly reads it; and each dispatched role
+carries its own role page and never the other role's. Failing any of the three means the harness of section 5 was not
 delivered, whatever else the build passes.
 
 Observation metrics (in service of the above; not criteria themselves): N = *(value to be set by
@@ -234,7 +231,7 @@ major releases; zero startup ceremony for a demo project.
   method, the flow points at it by name and never copies its content onto a page of ours.
 - **No file force-loads another**: a link the harness resolves eagerly (`@path`) would drag the
   whole method into every session and destroy the on-demand loading that keeps the always-on
-  payload small enough to deliver at all.
+  payload from crowding out the task.
 - **Release is never automatic by default**: shipping is tag-triggered and the human decides when
   to tag. A repository may grant its orchestrator a standing delegation to release — workflow 1's
   last step assumes one — but that delegation is given by the human, never taken.
