@@ -22,7 +22,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/LeonJoeeee/devstandard-dsh.git"
+    "url": "git+https://github.com/LeonJoeeee/DevStandard-DeepSeekHarness.git"
   },
   "dsh": {
     "bundle": {
