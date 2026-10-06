@@ -113,8 +113,7 @@ python3 .github/check-dsh-guard.py
 # The dsh bundle end to end: the gate above, then a live run against a local deterministic
 # OpenAI-compatible endpoint proving the root carries reference/orchestrator.md, the `worker`
 # and `reviewer` children carry their own page and tool surface, and both run on the anchor.
-# Needs an installed `dsh`, Node and pnpm; not in CI yet (the port's dsh runtime job adopts it,
-# ADR 0064).
+# Needs an installed `dsh`, Node and pnpm; the `dsh` CI job installs them and runs it (ADR 0064).
 python3 .github/test-dsh-bundle.py
 
 # 1. Per-artifact hook delivery: inline, the exact byte boundary of one part, multi-part
@@ -144,8 +143,8 @@ test "$(gh api "repos/LeonJoeeee/devstandard/issues/$PR/comments" \
 #    Verdicts predating that convention carry headings of their own; on a PR that old, read for
 #    yourself rather than trusting this matcher's silence.
 
-# 6. both release manifests in lockstep (and equal to the tag, on release)
-python3 -c 'import json; p=json.load(open(".claude-plugin/plugin.json"))["version"]; m=json.load(open(".claude-plugin/marketplace.json"))["plugins"][0]["version"]; assert p==m; print("lockstep",p)'
+# 6. the bundle's release manifest declares a dotted numeric version (equal to the tag, on release)
+python3 -c 'import json,re; v=json.load(open("package.json"))["version"]; assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", v), v; print("release manifest", v)'
 ```
 
 **The verdict is posted when it arrives, not when you remember.** Five consecutive merges once went
@@ -222,9 +221,9 @@ Two sites take a specific form:
 
 The role pages' two-checks paragraph says releasing is the human's call. **For this repo that call
 was delegated standing on 2026-07-24** (issue #37): since v0.9.3 the agent releases right after each merge —
-tag, push — with the release manifests already in lockstep (`.claude-plugin/plugin.json` and
-`.claude-plugin/marketplace.json`), without asking per release. The goal was that every merged
-improvement reaches the human's other sessions as fast as possible.
+tag, push — with the release manifest already at its version (`package.json`), without asking per
+release. The goal was that every merged improvement reaches the human's other sessions as fast as
+possible.
 
 **The delegation is issue #37, and nothing machine-readable.** It was a `standing_release` entry in
 the guard's configuration file until 2026-09-10, when that file — with `human_logins`,
@@ -237,13 +236,13 @@ Withdrawing it is the human's to do, and it takes saying so — on #37 or here �
 file. **Target projects are unaffected:** there, release go/no-go
 stays on the human's ask-axes and `reference/ci-pipelines.md`'s tag-triggered default governs.
 
-**Version bumps:** fold the lockstep bump into the change PR and put the semver call in its
+**Version bumps:** fold the version bump into the change PR and put the semver call in its
 description; a reviewer's disagreement is a Note, never a separate PR (human ruling, 2026-09-06,
-issue #226). If a bare bump PR is unavoidable, it needs no issue or check-1 reviewer: the CI
-lockstep gate is its review. It still merges through `scripts/guard merge`.
-The guard's bare-bump waiver and rebase exemption cover both synchronized manifest version
-fields, with equal old and new versions and no other line or mode changes; the rebase proof keeps
-its ordering checks (`reference/orchestrator.md`'s Merge and rebase proof section).
+issue #226). If a bare bump PR is unavoidable, it needs no issue or check-1 reviewer: the
+release-manifest version check is its review. It still merges through `scripts/guard merge`.
+The guard's bare-bump waiver and rebase exemption cover the bundle manifest's version field, with
+a rising dotted version and no other line or mode changes; the rebase proof keeps its ordering
+checks (`reference/orchestrator.md`'s Merge and rebase proof section).
 
 ## ADRs in this repo
 

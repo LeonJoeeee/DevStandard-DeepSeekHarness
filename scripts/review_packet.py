@@ -141,8 +141,9 @@ def recovery_ruling(ruling, head):
     return False
 
 
-# The synchronized release manifests: the two Claude ones since the Codex host went (#459).
-MANIFESTS = ('.claude-plugin/plugin.json', '.claude-plugin/marketplace.json')
+# The release manifest: the bundle's own `package.json` since the version story moved off the
+# retired `.claude-plugin` pair (#18). One file, so nothing is synchronized against it.
+MANIFESTS = ('package.json',)
 
 
 def pinned_git(project, env=None):
@@ -170,8 +171,7 @@ def manifest_bump(project, base, head, path, env=None):
         return None
     try:
         documents = [json.loads(blob) for blob in (before, after)]
-        values = [doc['plugins'][0]['version'] if path == '.claude-plugin/marketplace.json' else doc['version']
-                  for doc in documents]
+        values = [doc['version'] for doc in documents]
         if values != [json.loads(match[2]) for match in matches] or values[0] == values[1]:
             return None
     except (ValueError, KeyError, IndexError, TypeError):
@@ -180,7 +180,7 @@ def manifest_bump(project, base, head, path, env=None):
 
 
 def version_only(project, base, head, env=None):
-    """Prove the complete pinned diff is only the synchronized manifest version lines."""
+    """Prove the complete pinned diff is only the release manifest version lines."""
     if not (SHA.fullmatch(base) and SHA.fullmatch(head)):
         return False  # Unpinned ends the proof, never the review: an ordinary packet is assembled.
     paths = [path.encode() for path in MANIFESTS]

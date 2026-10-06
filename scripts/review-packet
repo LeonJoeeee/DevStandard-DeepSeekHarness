@@ -473,7 +473,8 @@ def main():
                 # An unreadable pin cannot prove a bare bump; assembly reports it to the reviewer.
                 bare_bump = False
             require(not bare_bump,
-                    'bare version bump: no review needed; CI lockstep is its review; use scripts/guard merge')
+                    'bare version bump: no review needed; the release manifest version check is '
+                    'its review; use scripts/guard merge')
             require(args.issue is not None, '--issue is required for an ordinary review')
             issue = gh(project, 'issue', 'view', str(args.issue), '--repo', repo,
                        '--json', 'number,title,url,body,state,comments')
