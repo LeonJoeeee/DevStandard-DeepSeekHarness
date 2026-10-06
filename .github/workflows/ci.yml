@@ -280,7 +280,12 @@ jobs:
         run: python3 -m pip install PyYAML==6.0.3
       - name: Install the dsh runtime and the pnpm its plugin manager shells out to
         run: |
-          npm install --prefix "$RUNNER_TEMP/devstandard-dsh" @deepseek-ai/dsh@0.2.0-rc.2 pnpm@11.25.0
+          # `--install-strategy=nested` keeps each package's dependencies inside its own
+          # node_modules. A default (hoisted) prefix install strands `@deepseek-ai/dsh`'s sibling
+          # packages at the prefix root — not the layout a global `dsh` install has, and not the
+          # one `.github/test-dsh-bundle.py` resolves the bundle's rows against.
+          npm install --prefix "$RUNNER_TEMP/devstandard-dsh" --install-strategy=nested \
+            @deepseek-ai/dsh@0.2.0-rc.2 pnpm@11.25.0
           echo "$RUNNER_TEMP/devstandard-dsh/node_modules/.bin" >> "$GITHUB_PATH"
       - name: dsh bundle end to end — role delivery, tool surface and guard
         run: python3 .github/test-dsh-bundle.py
