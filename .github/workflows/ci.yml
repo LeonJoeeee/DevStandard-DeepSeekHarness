@@ -45,14 +45,14 @@ jobs:
             | grep -v "actions/" | grep -v "anthropic" | grep .
       - name: Every ADR amendment block is announced by its status line
         run: python3 .github/check-adr-index.py
-      - name: Release manifest versions stay in lockstep
+      - name: The bundle's release manifest declares a dotted numeric version
         run: |
           python3 - <<'EOF'
-          import json
-          p = json.load(open('.claude-plugin/plugin.json'))['version']
-          m = json.load(open('.claude-plugin/marketplace.json'))['plugins'][0]['version']
-          assert p == m, f'Claude plugin={p} marketplace={m}'
-          print('versions in lockstep:', p)
+          import json, re
+          version = json.load(open('package.json'))['version']
+          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version), \
+              f'the release manifest version is not a dotted numeric release: {version!r}'
+          print('release manifest:', version)
           EOF
 
       - name: live pages carry the surviving 0039/0040 invariants and none of the retired claims
@@ -250,21 +250,66 @@ jobs:
                   print(path.read_text()[-20000:])
           PY
 
+  # The port's runtime job: the dsh bundle composed into a throwaway headless-derived profile and
+  # driven against a local deterministic OpenAI-compatible endpoint (design §(h)). It carries the
+  # runner axes the retired Codex job had — a macOS leg and Python 3.12 — so the coverage #14
+  # dropped by accident comes back here rather than nowhere.
+  dsh:
+    name: dsh (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Bind test checkout to the advertised PR merge result
+        if: github.event_name == 'pull_request'
+        env:
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git rev-parse HEAD^1)" = "$EXPECTED_BASE"
+          test "$(git rev-parse HEAD^2)" = "$EXPECTED_HEAD"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install the bundle gate's YAML parser
+        run: python3 -m pip install PyYAML==6.0.3
+      - name: Install the dsh runtime and the pnpm its plugin manager shells out to
+        run: |
+          npm install --prefix "$RUNNER_TEMP/devstandard-dsh" @deepseek-ai/dsh@0.2.0-rc.2 pnpm@11.25.0
+          echo "$RUNNER_TEMP/devstandard-dsh/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: dsh bundle end to end — role delivery, tool surface and guard
+        run: python3 .github/test-dsh-bundle.py
+      # Restored coverage (#18 item 3): retiring the Codex job in #14 dropped these as collateral.
+      # They run here because this job is where a macOS runner and a Python 3.12 interpreter live.
+      - name: Hook delivery on this runner's own bash
+        run: python3 .github/test-session-start.py
+      - name: Detached process and review publication on Python 3.12
+        run: |
+          python3 .github/test-dispatch.py
+          python3 .github/test-review-packet.py
+
   # Preserve the branch-protection context; every dependency must actually pass.
   test:
     if: ${{ always() }}
-    needs: [suite, sweep, claude]
+    needs: [suite, sweep, claude, dsh]
     runs-on: ubuntu-latest
     steps:
-      - name: Require the ordinary suite and every sweep shard
+      - name: Require the ordinary suite, every sweep shard, the Claude and the dsh jobs
         env:
           SUITE_RESULT: ${{ needs.suite.result }}
           SWEEP_RESULT: ${{ needs.sweep.result }}
           CLAUDE_RESULT: ${{ needs.claude.result }}
+          DSH_RESULT: ${{ needs.dsh.result }}
         run: |
           test "$SUITE_RESULT" = success
           test "$SWEEP_RESULT" = success
           test "$CLAUDE_RESULT" = success
+          test "$DSH_RESULT" = success
 
   merged-result:
     name: merged-result / ${{ github.event.pull_request.base.sha }} / ${{ github.event.pull_request.head.sha }}

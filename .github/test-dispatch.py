@@ -463,7 +463,7 @@ else: raise SystemExit('unexpected gh: '+repr(a))
                          + verdicts['canonical_verdict'](head))]
         self.env['REVIEW_COMMENTS'] = json.dumps(accepted)
         brief = self.root / 'continue.txt'
-        brief.write_text('Rebase onto current main and carry the lockstep bump.')
+        brief.write_text('Rebase onto current main and carry the version bump.')
         options = ('--purpose', 'worker', '--continue', '--pr', '13', '--brief', str(brief))
         # (b) The PR's base is still the default branch's head: today's refusal stands.
         before = self.comments.read_text()

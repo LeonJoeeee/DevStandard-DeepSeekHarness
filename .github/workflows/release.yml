@@ -16,14 +16,13 @@ jobs:
           python3 .github/check-core-budget.py
           ! grep -rn "@[a-zA-Z0-9_-]*/" reference/ --include='*.md' \
             | grep -v "actions/" | grep -v "anthropic" | grep .
-      - name: Versions must match the tag
+      - name: The release manifest version must match the tag
         run: |
           python3 - <<'EOF'
           import json, os
           tag = os.environ['GITHUB_REF_NAME'].lstrip('v')
-          p = json.load(open('.claude-plugin/plugin.json'))['version']
-          m = json.load(open('.claude-plugin/marketplace.json'))['plugins'][0]['version']
-          assert p == m == tag, f'Claude plugin={p} marketplace={m} tag={tag}'
+          version = json.load(open('package.json'))['version']
+          assert version == tag, f'release manifest={version} tag={tag}'
           EOF
       - name: Publish GitHub release (idempotent)
         env:

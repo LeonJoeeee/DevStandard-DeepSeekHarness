@@ -621,17 +621,18 @@ if os.environ.get('WATCH_READY'): Path(os.environ['WATCH_READY']).touch()""")
         self.assertEqual(len(rows), 150)
         self.assertTrue(all(row['body'] == bodies[1] for row in rows))
 
-    def bare_bump_start(self, stale_marketplace=False):
-        paths = ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.json']
-        for path in paths:
-            (self.wt / path).parent.mkdir(exist_ok=True)
-            (self.wt / path).write_bytes((SOURCE / path).read_bytes())
+    def bare_bump_start(self, extra_change=False):
+        """A reviewed head whose only change is the bundle manifest's version line."""
+        path = 'package.json'
+        (self.wt / path).write_bytes((SOURCE / path).read_bytes())
         self.d.git('-C', str(self.wt), 'add', '.')
-        self.d.git('-C', str(self.wt), 'commit', '-m', 'manifests')
+        self.d.git('-C', str(self.wt), 'commit', '-m', 'the release manifest')
         base = self.d.git('-C', str(self.wt), 'rev-parse', 'HEAD')
-        for path in paths[:1] if stale_marketplace else paths:
-            source = (self.wt / path).read_text()
-            (self.wt / path).write_text(re.sub(r'("version": ")[^"]+', r'\g<1>0.99.1', source))
+        source = (self.wt / path).read_text()
+        (self.wt / path).write_text(re.sub(r'("version": ")[^"]+', r'\g<1>0.99.1', source))
+        if extra_change:
+            (self.wt / path).write_text(re.sub(
+                r'("description": ")[^"]*', r'\g<1>a change beside the bump', (self.wt / path).read_text()))
         self.d.git('-C', str(self.wt), 'add', '.')
         self.d.git('-C', str(self.wt), 'commit', '-m', 'bare bump')
         head = self.d.git('-C', str(self.wt), 'rev-parse', 'HEAD')
@@ -654,8 +655,9 @@ if os.environ.get('WATCH_READY'): Path(os.environ['WATCH_READY']).touch()""")
         self.assertEqual(json.loads(self.prcomments.read_text()), [])
         self.assertFalse(self.out.exists())
 
-    def test_one_manifest_bump_with_a_stale_marketplace_requires_ordinary_review(self):
-        result = self.bare_bump_start(stale_marketplace=True)
+    def test_a_version_bump_beside_any_other_change_requires_ordinary_review(self):
+        """Only a diff confined to the release manifest's version line is a bare bump."""
+        result = self.bare_bump_start(extra_change=True)
         self.assertEqual(result.returncode, 2)
         self.assertIn('--issue is required', result.stderr)
         self.assertNotIn('no review needed', result.stderr)

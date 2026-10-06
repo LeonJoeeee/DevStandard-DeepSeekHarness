@@ -31,9 +31,9 @@ for; that page keeps the decision and the command line).
 
   Rebase proof. With --old-base/--old-head the guard replays the old commits with hooks and rerere
   disabled, refuses non-version conflicts and merge commits, and compares every changed path's
-  bytes, mode, deletion and symlink identity. Only the two synchronized release-manifest version
-  fields are exempt, and only when the new dotted version rises above both the reviewed and the
-  replayed value.
+  bytes, mode, deletion and symlink identity. Only the release manifest's version line is
+  exempt, and only when the new dotted version rises above both the reviewed and the replayed
+  value.
 """
 
 PROTECTION_EPILOG = """PROTECTION CONTRACT (the caller-facing detail reference/orchestrator.md
