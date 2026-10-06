@@ -8,7 +8,6 @@ from pathlib import Path
 import re
 import runpy
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -461,22 +460,20 @@ if os.environ.get('WATCH_READY'): Path(os.environ['WATCH_READY']).touch()""")
         self.out=self.root/'assembly'
         self.verdict=self.root/'verdict.txt'
         self.write_verdict()
-        # The executor boundary emits a complete verdict; process launch, sandbox selection,
-        # supervision, and publication all remain production code.
-        self.env['VERDICT']=str(self.verdict)
-        self.d.tool('codex', '''import os,sys,time
-from pathlib import Path
-a=sys.argv[1:]
-assert a[a.index('-s')+1]=='read-only'
-Path(a[a.index('-o')+1]).write_bytes(Path(os.environ['VERDICT']).read_bytes())
-hold=os.environ.get('FAKE_HOLD');deadline=time.monotonic()+20
-while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep(.01)
-''')
+        # The reviewer is the bundle's `reviewer` tool: the caller reads the emitted instruction,
+        # calls it, and publishes the whole returned verdict against the reserved attempt.
+
+    def reviewer_identity(self):
+        sys.path.insert(0, str(SOURCE/'scripts'))
+        try:
+            from hard_edges import model_anchor
+            model, effort = model_anchor(SOURCE)
+        finally:
+            sys.path.pop(0)
+        return f'dsh subagent, {model} at {effort}, read-only'
 
     def write_verdict(self, goal='Yes', floor1='Pass', floor2='Pass', notes='None.'):
-        source=(SOURCE/'reference/orchestrator.md').read_text()
-        model,effort=re.search(r'^\| reviewer \| `(\S+)` at `(\S+)` \|',source,re.M).groups()
-        self.verdict.write_text(f'Reviewer: Codex, {model} at {effort}, read-only — reviewed {self.head}\n'
+        self.verdict.write_text(f'Reviewer: {self.reviewer_identity()} — reviewed {self.head}\n'
             f'### Goal verdict\n{goal} — Checked the claim against the diff.\n### Floor\n'
             f'1. Evidence-backed completion claim: {floor1} — Evidence checked.\n'
             f'2. Authorization and scope: {floor2} — Scope checked.\n'
@@ -522,7 +519,18 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
             self.assertIn(expected, message)
 
     def start(self, *args):
-        return self.call('start','--architecture-level','no','--output',str(self.out),'--implementation','codex',*args)
+        return self.call('start','--architecture-level','no','--output',str(self.out),*args)
+
+    def return_verdict(self, started, verdict=None):
+        """The caller's publication of the whole verdict its `reviewer` tool returned."""
+        return self.call('publish','--attempt',str(started['attempt']),
+                         '--verdict',str(verdict or self.verdict))
+
+    def start_and_return(self, *args):
+        """Reserve a round, dispatch the reviewer and publish the whole returned verdict."""
+        started=self.start(*args)
+        self.return_verdict(started)
+        return started
 
     def reserve_without_run(self):
         """Create the durable state left when start stops after reservation publication."""
@@ -533,48 +541,21 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
         self.prcomments.write_text(json.dumps([dict(id=100, body=body)]))
         return record
 
-    def test_the_native_attestation_pass_through_is_gone_from_both_scripts(self):
-        """#427: it attested what `alive()` never checked. `start` still reaches its reviewer."""
+    def test_the_removed_executor_surface_is_gone_from_both_scripts(self):
+        """One implementation: no chooser, no detached observer, no lost-run reconciliation."""
         for script in (self.script, Path(self.script).with_name('dispatch')):
             with self.subTest(script=script.name):
                 help_text = subprocess.run([sys.executable, str(script), '--help'], env=self.env,
                                            text=True, capture_output=True)
                 self.assertEqual(help_text.returncode, 0, help_text.stderr)
-                self.assertNotIn('native-finished', help_text.stdout)
-        refused = self.call('start', '--implementation', 'claude', '--output', str(self.out),
-                            '--native-finished', ok=False)
+                for absent in ('--implementation', '--wait', '--reconcile-lost', '_watch',
+                               'native-finished'):
+                    self.assertNotIn(absent, help_text.stdout)
+        refused = self.call('start', '--reconcile-lost', ok=False)
         self.assertIn('unrecognized arguments', refused)
-        started = self.start('--implementation', 'claude')
-        self.assertEqual(started['run']['status'], 'awaiting-agent-tool')
-
-    def test_start_forwards_independent_model_and_effort_overrides(self):
-        for implementation in ('codex', 'claude'):
-            default = ('gpt-6-astra', 'high') if implementation == 'codex' else ('opus', 'high')
-            for flags, expected in [(('--model', 'override-model'), ('override-model', default[1])),
-                                    (('--effort', 'low'), (default[0], 'low')),
-                                    (('--model', 'override-model', '--effort', 'low'),
-                                     ('override-model', 'low'))]:
-                with self.subTest(implementation=implementation, flags=flags):
-                    fixture = ReviewTest(); fixture.setUp()
-                    try:
-                        wait = ()
-                        if implementation == 'codex':
-                            fixture.verdict.write_text(re.sub(r'^Reviewer: .*? — reviewed',
-                                f'Reviewer: Codex, {expected[0]} at {expected[1]}, read-only — reviewed',
-                                fixture.verdict.read_text()))
-                            wait = ('--wait',)
-                        result = fixture.start('--implementation', implementation, *flags, *wait)
-                        self.assertEqual((result['run']['model'], result['run']['effort']), expected)
-                        self.assertIn(f'{expected[0]} at {expected[1]}, read-only', result['identity'])
-                        brief = Path(result['run']['brief']).read_text()
-                        self.assertIn(result['identity'], brief)
-                        if implementation == 'claude':
-                            spawn = json.loads(Path(result['run']['instruction']).read_text())
-                            self.assertEqual((spawn['model'], spawn['effort']), expected)
-                        else:
-                            fixture.d.wait_completion(result['run'])
-                    finally:
-                        fixture.doCleanups()
+        started = self.start()
+        self.assertEqual(started['run']['status'], 'awaiting-delegation')
+        self.assertEqual(json.loads(Path(started['run']['instruction']).read_text())['tool'], 'reviewer')
 
     def head_touching(self, *paths):
         """Advance the PR head over the named paths, keeping every pin the assembler reads current."""
@@ -725,19 +706,21 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
                 pr['headRefOid'] = sha
                 self.prfile.write_text(json.dumps(pr))
                 result = self.invoke('start', '--architecture-level', 'no',
-                                     '--output', str(self.out), '--implementation', 'claude')
+                                     '--output', str(self.out))
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(json.loads(self.prcomments.read_text()), [])
                 self.assertIn('full SHA' if sha == 'deadbeef' else sha, result.stderr)
 
-    def test_assembled_reviewer_defaults_to_the_hosts_own_subagent(self):
-        """#332: the assembler picks the same default the dispatcher does, Codex installed or not."""
-        self.assertTrue(shutil.which('codex', path=str(self.d.bin)))
+    def test_assembled_reviewer_route_comes_from_the_bundle_anchor(self):
+        """The assembler reads the same one anchor the dispatcher does (ADR 0066): no chooser,
+        no explicit override, and one identity derived from the route."""
         result=self.assemble()
-        self.assertEqual(result['implementation'],'claude')
-        self.assertEqual(result['identity'],'Claude subagent, opus at high, read-only')
+        self.assertNotIn('implementation',result)
+        identity='dsh subagent, deepseek-v4.1-flash at max, read-only'
+        self.assertEqual(result['identity'],identity)
+        self.assertEqual((result['model'],result['effort']),('deepseek-v4.1-flash','max'))
         packet=json.loads(Path(result['packet']).read_text())
-        self.assertEqual(packet['slots']['REVIEWER_IDENTITY'],'Claude subagent, opus at high, read-only')
+        self.assertEqual(packet['slots']['REVIEWER_IDENTITY'],identity)
 
     def test_rendered_packet_carries_the_open_ended_goal_clauses(self):
         # Both reviewer paths read this rendered brief and nothing else, so the #313 clauses reach
@@ -782,7 +765,7 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
         # Exercise its real envelope and whole return, rather than a hand-built record.
         self.verdict.write_text(self.verdict.read_text().replace(
             '### Goal verdict\nYes', '### **Goal verdict**\n\n**Yes**'))
-        self.start()
+        self.start_and_return()
         rows = self.published()
         guard = runpy.run_path(str(SOURCE/'scripts/hard_edges.py'))
         accepted = guard['merge_acceptance'](rows, self.head)
@@ -822,6 +805,7 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
         shutil.copytree(SOURCE/'reference',install/'reference')
         # Probe fresh contract reads from a complete installed-plugin fixture.
         shutil.copytree(SOURCE/'agents',install/'agents')
+        shutil.copy(SOURCE/'cordis.patch.yml',install/'cordis.patch.yml')
         self.script=install/'scripts/review-packet'
         contract=install/'reference/code-review-prompt.md'
         contract.write_text(contract.read_text().replace('## Judging contract','## Judging contract\nCurrent source sentinel.'))
@@ -939,109 +923,6 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
         self.assertIn('placeholder',self.assemble(ok=False))
         self.assertFalse(self.out.exists())
 
-    def test_wait_keeps_origin_alive_through_whole_verdict_publication(self):
-        self.env['FAKE_HOLD'] = str(self.root/'executor-release')
-        process = subprocess.Popen([sys.executable,str(self.script),'start','13','--issue','12',
-            '--project',str(self.project),'--architecture-level','no','--output',str(self.out),
-            '--implementation','codex','--wait'], env=self.env,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-        self.addCleanup(lambda: process.poll() is None and process.kill())
-        record = self.d.await_run(process)
-        self.assertIsNone(process.poll())
-        self.assertFalse(Path(record['completion']).exists())
-        Path(self.env['FAKE_HOLD']).touch()
-        stdout, stderr = process.communicate(timeout=12)
-        self.assertEqual(process.returncode,0,stderr)
-        started = json.loads(stdout)
-        rows = json.loads(self.prcomments.read_text())
-        self.assertEqual(len(rows),1)
-        self.assertTrue(rows[0]['body'].endswith(self.verdict.read_text()))
-        self.assertIn('"status": "returned"',rows[0]['body'])
-        self.assertEqual(started['publication']['status'],'returned')
-        self.assertFalse(list(self.out.glob('publication-*.log')))
-        before = self.prcomments.read_text()
-        self.call('publish','--attempt',str(started['attempt']))
-        self.assertEqual(self.prcomments.read_text(),before)
-
-    def test_wait_rejects_non_start_or_native_review_before_mutation(self):
-        for action, options in [('assemble',()), ('start',()), ('status',()), ('publish',())]:
-            before = self.prcomments.read_text()
-            self.assertIn('--wait',self.call(action,*options,'--wait',ok=False))
-            self.assertEqual(self.prcomments.read_text(),before)
-            self.assertFalse(self.out.exists())
-
-    def test_wait_failed_executor_publishes_failure_synchronously(self):
-        self.d.tool('codex', 'import sys; print("startup failed"); sys.exit(9)')
-        started = self.start('--wait')
-        self.assertEqual(started['publication']['status'],'failed')
-        self.assertEqual(Path(started['run']['completion']).read_text(),'9\n')
-        self.assertIn('startup failed',Path(started['run']['log']).read_text())
-        self.assertEqual(self.call('status')['rounds'],0)
-        self.assertEqual(self.call('status')['active'],[])
-
-    def test_wait_reports_an_executor_that_never_started_instead_of_an_absent_completion(self):
-        """#454: exec failure left `review completion absent` — indistinguishable from a reviewer
-        still out there — so the attempt could only be recovered by hand."""
-        (self.d.bin/'codex').write_text('#!/nonexistent/interpreter\n')
-        started = self.start('--wait')
-        self.assertEqual(started['publication']['status'], 'failed')
-        self.assertIn('executor never started', started['publication']['error'])
-        self.assertIn('No such file or directory', started['publication']['error'])
-        self.assertFalse(Path(started['run']['completion']).exists())
-        status = self.call('status')
-        self.assertEqual((status['rounds'], status['active']), (0, []))
-        self.assertIn('executor never started', self.prcomments.read_text())
-
-    def test_a_reconciled_lost_run_that_produced_nothing_can_be_failed_and_retried(self):
-        """#454: `--reconcile-lost` released the lane but not the review attempt, so `fail` said
-        'recorded run', `start` said 'already active', and the round could only end by hand."""
-        executor = (self.d.bin/'codex').read_text()
-        self.d.tool('codex', 'import time\ntime.sleep(30)\n')
-        started = self.start()
-        record = started['run']
-        os.killpg(record['pid'], signal.SIGKILL)
-        deadline = time.monotonic()+8
-        while Path(record['supervisor_lock']).exists() and self.call('status')['next'] == 'awaiting-verdict':
-            self.assertLess(time.monotonic(), deadline, 'supervisor did not stop')
-            time.sleep(.05)
-        self.assertFalse(Path(record['output']).exists())
-        self.assertIn('recorded run', self.call('fail', '--attempt', str(started['attempt']),
-                                                '--reason', 'Nothing ran.', ok=False))
-        self.d.call(*self.d.reconcile_options(record))
-        failed = self.call('fail', '--attempt', str(started['attempt']), '--reason',
-                           'Reviewer never returned output; run reconciled lost.')
-        self.assertEqual((failed['status'], failed['round']), ('failed', 1))
-        rows = json.loads(self.prcomments.read_text())
-        self.assertIn('Reviewer never returned output; run reconciled lost.', rows[0]['body'])
-        self.assertIn('Origin host inspection', rows[0]['body'])
-        self.assertNotIn('### Goal verdict', rows[0]['body'])
-        status = self.call('status')
-        self.assertEqual((status['rounds'], status['active']), (0, []))
-        (self.d.bin/'codex').write_text(executor)
-        retried = self.start('--wait')
-        self.assertEqual((retried['round'], retried['publication']['status']), (1, 'returned'))
-
-    def test_a_reconciled_lost_run_that_retained_output_is_still_published_not_failed(self):
-        """The other half of #454: retained output can still become a verdict, so releasing that
-        attempt stays on `publish`, which reads it."""
-        self.env['FAKE_HOLD'] = str(self.root/'executor-release')
-        started = self.start()
-        record = self.d.await_run()
-        os.killpg(record['pid'], signal.SIGKILL)
-        time.sleep(.1)
-        self.assertTrue(Path(record['output']).read_text().strip())
-        self.d.call(*self.d.reconcile_options(record))
-        before = self.prcomments.read_text()
-        refusal = self.call('fail', '--attempt', str(started['attempt']), '--reason',
-                            'Discard it.', ok=False)
-        self.assertIn('retained executor output', refusal)
-        self.assertIn('publish --attempt', refusal)
-        self.assertEqual(self.prcomments.read_text(), before)
-        # Publication is the disposition that reads a retained output, and the one that records
-        # this loss; `fail` never gets to decide that a real verdict was worth discarding.
-        released = self.call('publish', '--attempt', str(started['attempt']))
-        self.assertEqual(released['status'], 'failed')
-        self.assertIn('lost review execution reconciled', released['error'])
-
     def test_failing_an_unlaunched_reservation_requires_a_reason(self):
         self.reserve_without_run()
         unchanged = self.prcomments.read_text()
@@ -1062,8 +943,9 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
         self.assertNotIn('"run"', rows[0]['body'])
         self.assertNotIn('### Goal verdict', rows[0]['body'])
 
-        started = self.start('--wait')
-        self.assertEqual((started['round'], started['publication']['status']), (1, 'returned'))
+        started = self.start()
+        self.return_verdict(started)
+        self.assertEqual((started['round'], self.call('status')['rounds']), (1, 1))
 
     def test_failed_reservation_preserves_round_count_and_guard_requirements(self):
         self.reserve_without_run()
@@ -1086,14 +968,14 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
         with self.assertRaisesRegex(guard['Refusal'], 'no whole Merge check 1 verdict'):
             guard['merge_acceptance'](rows, self.head)
 
-        started = self.start('--wait')
-        self.assertEqual((started['round'], started['publication']['status']), (1, 'returned'))
+        started = self.start()
+        self.return_verdict(started)
+        self.assertEqual(started['round'], 1)
         accepted = guard['merge_acceptance'](json.loads(self.prcomments.read_text()), self.head)
         self.assertEqual(accepted['record']['round'], 1)
 
     def test_an_attempt_with_a_recorded_run_cannot_be_failed(self):
-        started = self.call('start', '--architecture-level', 'no', '--output', str(self.out),
-                            '--implementation', 'claude')
+        started = self.start()
         before = self.prcomments.read_text()
         refusal = self.call('fail', '--attempt', str(started['attempt']), '--reason',
                             'Discard this attempt.', ok=False)
@@ -1114,150 +996,31 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
         self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
         self.assertEqual(json.loads(result.stdout)['next'], 'review')
 
-    def test_a_reservation_whose_executor_is_gone_is_reported_lost(self):
-        """#447: `state()` reported every reservation `awaiting-verdict`, whatever became of its
-        executor. #435 already stopped the merge guard refusing on one; nothing was waited for."""
-        self.reserve_without_run()
-        unlaunched = self.call('status')
-        self.assertEqual(unlaunched['next'], 'lost-reservation')
-        self.assertIn('fail --attempt', unlaunched['instruction'])
-
-        self.prcomments.write_text('[]')
-        self.env['FAKE_HOLD'] = str(self.root/'executor-release')
-        self.start()
-        record = self.d.await_run()
-        os.killpg(record['pid'], signal.SIGKILL)
-        time.sleep(.1)
-        killed = self.call('status')
-        self.assertEqual(killed['next'], 'lost-reservation')
-        self.assertIn('fail --attempt', killed['instruction'])
-        self.assertEqual(killed['rounds'], 0)
-
-    def test_a_tampered_lane_artifact_is_reported_lost_rather_than_refusing_status(self):
-        """#449: `live()` caught only `Refusal`, so the bare `OSError` a tampered lane artifact
-        raises — here a supervisor lock that is a directory, which its `O_RDWR | O_NOFOLLOW` open
-        rejects — escaped as a refusal of the whole `status` read, the one command whose job is to
-        show the orchestrator the reservation it has to recover."""
-        self.env['FAKE_HOLD'] = str(self.root/'executor-release')
-        self.start()
-        record = self.d.await_run()
-        os.killpg(record['pid'], signal.SIGKILL)
-        time.sleep(.1)
-        self.assertFalse(Path(record['completion']).exists())
-        # A directory still resolves to its own recorded name, so the artifact identity check
-        # passes and the open is what fails; a symlink loop is refused by that identity check
-        # itself, uniformly across interpreters, since #451.
-        lock = Path(record['supervisor_lock']); lock.unlink(); lock.mkdir()
-        status = self.call('status')
-        self.assertEqual((status['next'], status['rounds']), ('lost-reservation', 0))
-        # #451: reading every filesystem error as "no executor" is right for this tampered lock
-        # and wrong for a transient EIO or EACCES, and the reading is the same either way. The
-        # status output carries the errno text so the orchestrator can tell them apart.
-        self.assertEqual(len(status['liveness_errors']), 1)
-        self.assertIn(str(status['active'][0]['comment_id']), status['liveness_errors'][0])
-        self.assertIn('Is a directory', status['liveness_errors'][0])
-        self.assertIn(record['supervisor_lock'], status['liveness_errors'][0])
-        # The attempt carries a recorded run, so `fail` refuses it: name the command that works.
-        self.assertIn('publish --attempt', status['instruction'])
-        self.assertIn('fail --attempt', status['instruction'])
-        # Reporting the reservation never releases it: disposition still holds the line.
-        released = self.call('publish', '--attempt', str(status['active'][0]['comment_id']), ok=False)
-        self.assertIn('reconcil', released)
-
-    def test_a_reservation_with_a_live_executor_still_awaits_its_verdict(self):
-        self.env['FAKE_HOLD'] = str(self.root/'executor-release')
-        self.start()
-        record = self.d.await_run()
+    def test_a_dispatched_attempt_awaits_its_verdict(self):
+        """A child's handle is the caller's own; nothing a shell reads reports it lost."""
+        started = self.start()
         status = self.call('status')
         self.assertEqual(status['next'], 'awaiting-verdict')
+        self.assertEqual(status['rounds'], 0)
         self.assertNotIn('instruction', status)
-        self.d.wait_completion(record)
-
-    def test_lost_review_requires_exact_issue_reconciliation_even_after_scratch_deletion(self):
-        self.env['FAKE_HOLD'] = str(self.root/'executor-release')
-        started = self.start()
-        record = self.d.await_run()
-        os.killpg(record['pid'],signal.SIGKILL)
-        time.sleep(.1)
-        # Partial model output exists, but without completion it cannot become a verdict.
-        self.assertTrue(Path(record['output']).read_text())
-        before = self.prcomments.read_text()
-        self.assertIn('reconcil',self.call('publish','--attempt',str(started['attempt']),ok=False))
-        self.assertEqual(self.prcomments.read_text(),before)
-        shutil.rmtree(Path(record['brief']).parent)
-        self.d.call(*self.d.reconcile_options(record))
-        result = self.call('publish','--attempt',str(started['attempt']))
-        self.assertEqual(result['status'],'failed')
-        rows = json.loads(self.prcomments.read_text())
-        self.assertEqual(len(rows),1)
-        self.assertIn('Origin host inspection',rows[0]['body'])
-        self.assertIn('issuecomment-99',rows[0]['body'])
-        self.assertNotIn('executor_exit',rows[0]['body'])
-        self.assertNotIn('### Goal verdict',rows[0]['body'])
-        self.assertFalse(Path(record['brief']).parent.exists())
-        self.assertEqual(self.call('status')['active'],[])
-        self.assertEqual(self.call('status')['rounds'],0)
-        before = self.prcomments.read_text()
-        self.call('publish','--attempt',str(started['attempt']))
-        self.assertEqual(self.prcomments.read_text(),before)
-
-    def test_wait_publication_failure_retains_result_for_idempotent_retry(self):
-        gh = self.d.bin/'gh'
-        source = gh.read_text()
-        source = source.replace("row['body']=json.loads(Path(a[a.index('--input')+1]).read_text())['body'];write_comments(rows)",
-            "body=json.loads(Path(a[a.index('--input')+1]).read_text())['body']\n  if os.environ.get('REJECT_VERDICT') and body.startswith('## Merge check 1'): raise SystemExit('fixture verdict publication failed')\n  row['body']=body;write_comments(rows)")
-        gh.write_text(source)
-        self.env['REJECT_VERDICT']='1'
-        error = self.call('start','--architecture-level','no','--output',str(self.out),
-                          '--implementation','codex','--wait',ok=False)
-        self.assertIn('fixture verdict publication failed',error)
-        record = self.d.lane_records()[-1]
-        self.assertEqual(Path(record['completion']).read_text(),'0\n')
-        self.assertEqual(Path(record['output']).read_text(),self.verdict.read_text())
-        self.env.pop('REJECT_VERDICT')
-        self.call('publish','--attempt','100')
-        before = self.prcomments.read_text()
-        self.call('publish','--attempt','100')
-        self.assertEqual(self.prcomments.read_text(),before)
-        self.assertEqual(len(self.d.lane_records()),2)
+        self.assertEqual([r['comment_id'] for r in status['active']], [started['attempt']])
+        # A reserved attempt with no run can still be failed; a dispatched one cannot.
+        self.assertIn('recorded run', self.call('fail', '--attempt', str(started['attempt']),
+                                                '--reason', 'Discard it.', ok=False))
 
     def test_start_dispatches_and_publishes_whole_verdict_once(self):
-        result=self.start();comments=self.published()
+        result=self.start()
+        self.return_verdict(result)
+        comments=self.published()
         verdicts=[r for r in comments if r['body'].startswith('## Merge check 1 — round ')]
         self.assertEqual(len(verdicts),1)
         self.assertTrue(verdicts[0]['body'].endswith(self.verdict.read_text()))
         self.assertTrue(verdicts[0]['body'].startswith('## Merge check 1 — round 1\n'))
         status=self.call('status');self.assertEqual(status['rounds'],1)
         self.assertEqual(status['next'],'accepted')
-        self.call('publish','--attempt',str(result['attempt']))
+        # Publishing a returned attempt again is idempotent.
+        self.call('publish','--attempt',str(result['attempt']),'--verdict',str(self.verdict))
         self.assertEqual(self.prcomments.read_text(),json.dumps(comments))
-
-    def test_detached_publication_survives_session_hangup(self):
-        self.d.without_detachment_tools()
-        release = self.root/'release'
-        self.env['FAKE_HOLD'] = str(release)
-        result = self.start()
-        # A second real return handler must also survive HUP and serialize publication.
-        # Its environment uniquely identifies its first GitHub read as readiness.
-        ready = self.root/'watch-ready'
-        env = dict(self.env, WATCH_READY=str(ready))
-        command = [sys.executable, str(self.script), '_watch', '13', '--issue', '12',
-                   '--project', str(self.project), '--attempt', str(result['attempt'])]
-        with subprocess.Popen(command, env=env, text=True, stdin=subprocess.DEVNULL,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              start_new_session=True) as observer:
-            try:
-                deadline = time.monotonic() + 8
-                while not ready.exists() and observer.poll() is None and time.monotonic() < deadline:
-                    time.sleep(.02)
-                self.assertTrue(ready.exists())
-                os.killpg(observer.pid, signal.SIGHUP)
-            finally:
-                release.touch()
-                stdout, stderr = observer.communicate(timeout=12)
-                self.published()
-            self.assertEqual(observer.returncode, 0, stdout + stderr)
-        self.assertEqual(self.call('status')['next'], 'accepted')
 
     def test_floor_failures_count_and_an_eighth_round_warns_instead_of_refusing(self):
         """#434: the count was never the stop signal; flat repeated findings are (#173)."""
@@ -1266,23 +1029,20 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
             if round_number>1:
                 self.call('rule','--decision','continue','--reason','Obtain the missing evidence.')
             result=self.start()
-            # Explicit publication is recoverable and does not require inline waiting by start.
-            deadline=time.monotonic()+12
-            while time.monotonic()<deadline:
-                status=self.call('status')
-                if status['rounds']==round_number:break
-                time.sleep(.05)
+            self.return_verdict(result)
+            status=self.call('status')
             self.assertEqual(status['rounds'],round_number)
             self.assertEqual(status['next'],'evidence-fix-decision')
         self.assertIn('7 review rounds consumed',self.invoke('status').stderr)
         self.assertIn('7 review rounds consumed',self.call('status')['warning'])
         self.assertEqual(self.call('status')['cap'],7)
         self.call('rule','--decision','continue','--reason','One more round of evidence.')
-        eighth=self.invoke('start','--architecture-level','no','--output',str(self.out),
-                           '--implementation','codex')
+        eighth=self.invoke('start','--architecture-level','no','--output',str(self.out))
         self.assertEqual(eighth.returncode,0,eighth.stdout+eighth.stderr)
-        self.assertEqual(json.loads(eighth.stdout)['round'],8)
+        started=json.loads(eighth.stdout)
+        self.assertEqual(started['round'],8)
         self.assertIn('7 review rounds consumed',eighth.stderr)
+        self.return_verdict(started)
         self.published(8)
         self.assertEqual(self.call('status')['rounds'],8)
         self.assertIn('Floor',self.call('rule','--decision','merge-as-is','--reason','Goal met',ok=False))
@@ -1298,7 +1058,7 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
 
     def test_an_abandon_ruling_records_any_authorization_the_human_gave(self):
         """#434: the check is that one was given, not that it starts with a GitHub URL."""
-        self.start();self.published()
+        self.start_and_return();self.published()
         self.assertIn('human',self.call('rule','--decision','abandon','--reason','Stop',ok=False))
         self.assertIn('human',self.call('rule','--decision','abandon','--reason','Stop',
                                         '--human-authorization','   ',ok=False))
@@ -1308,8 +1068,8 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
 
     def test_merge_as_is_on_an_architecture_yes_record_needs_no_authorization(self):
         """#434: residue of the architecture-level sign-off gate #361 deleted from the guard."""
-        self.call('start','--architecture-level','yes','--output',str(self.out),
-                  '--implementation','codex')
+        started=self.call('start','--architecture-level','yes','--output',str(self.out))
+        self.return_verdict(started)
         self.published()
         self.assertEqual(self.call('status')['last']['architecture'],'YES')
         ruling=self.call('rule','--decision','merge-as-is','--reason','Goal met within bounds.')
@@ -1317,12 +1077,12 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
         self.assertIsNone(ruling['human_authorization'])
 
     def test_floor_two_stops_lane_without_fix_round(self):
-        self.write_verdict(goal='No',floor2='Fail');self.start();self.published()
+        self.write_verdict(goal='No',floor2='Fail');self.start_and_return();self.published()
         self.assertEqual(self.call('status')['next'],'human-escalation')
         self.assertIn('Floor',self.call('rule','--decision','continue','--reason','Fix scope',ok=False))
 
     def accepted_behind_main(self, conflict=False):
-        self.start(); self.published()
+        self.start_and_return(); self.published()
         path = self.project / ('result.txt' if conflict else 'unrelated.txt')
         path.write_text('Main advanced.\n')
         self.d.git('add', path.name)
@@ -1340,18 +1100,18 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
         self.assertEqual(ruling['recovery'], dict(kind='behind-base', head=self.head, base=base))
         guard = runpy.run_path(str(SOURCE/'scripts/hard_edges.py'))
         self.assertEqual(guard['round_check'](json.loads(self.prcomments.read_text()), self.head)['next_round'], 2)
-        self.assertEqual(self.start()['round'], 2)
+        self.assertEqual(self.start_and_return()['round'], 2)
         self.published(2)
 
     def test_conflicting_accepted_head_also_admits_continue(self):
         base = self.accepted_behind_main(conflict=True)
         ruling = self.call('rule', '--decision', 'continue', '--reason', 'Resolve the conflict with main.')
         self.assertEqual(ruling['recovery']['base'], base)
-        self.assertEqual(self.start()['round'], 2)
+        self.assertEqual(self.start_and_return()['round'], 2)
         self.published(2)
 
     def test_current_accepted_head_needs_guard_refusal_for_recovery(self):
-        self.start(); self.published()
+        self.start_and_return(); self.published()
         self.assertIn('Notes', self.call('rule', '--decision', 'continue', '--reason', 'Polish a Note.', ok=False))
         self.assertIn('Notes', self.call('start', '--architecture-level', 'no', '--output', str(self.out), ok=False))
         self.assertIn('refusal', self.call('rule', '--decision', 'continue', '--reason', 'Repair admission.',
@@ -1360,13 +1120,13 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
         ruling = self.call('rule', '--decision', 'continue', '--reason', 'Obtain a guard-admissible verdict.',
                            '--guard-refusal', refusal)
         self.assertEqual(ruling['recovery'], dict(kind='guard-refusal', head=self.head, reason=refusal))
-        self.assertEqual(self.start()['round'], 2)
+        self.assertEqual(self.start_and_return()['round'], 2)
         self.published(2)
 
     def test_empty_notes_publish_whole_and_are_accepted(self):
         """#426: an empty Notes section is form the contract asks for, not a defect to refuse."""
         self.write_verdict(notes='')
-        self.start(); self.published()
+        self.start_and_return(); self.published()
         status = self.call('status')
         self.assertTrue(status['last']['outcome']['valid'])
         self.assertEqual(status['next'], 'accepted')
@@ -1374,7 +1134,7 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
 
     def test_notes_and_goal_no_require_different_orchestrator_actions(self):
         self.write_verdict(goal='No',notes='Optional style improvement.')
-        self.start();self.published()
+        self.start_and_return();self.published()
         self.assertIn('ruling',self.call('start','--architecture-level','no','--output',str(self.out),ok=False))
         result=self.call('rule','--decision','merge-as-is','--reason','Goal is met within bounds; file the note.')
         self.assertEqual(result['decision'],'merge-as-is')
@@ -1391,26 +1151,13 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
         self.assertIn('Changed path differs',brief)
         self.assertIn('Result\n\n',brief)
         self.write_verdict(goal='No',notes='Quoted TODO {HEAD_SHA} and ## Diff are historical.')
-        self.start();self.published()
+        self.start_and_return();self.published()
         self.call('rule','--decision','continue','--reason','Repair the goal gap.')
         result=self.assemble()
         self.assertIn(self.verdict.read_text(),Path(result['brief']).read_text())
 
-    def test_failed_executor_without_verdict_releases_attempt_without_consuming_round(self):
-        self.d.tool('codex', 'raise SystemExit(9)\n')
-        result=self.start()
-        deadline=time.monotonic()+10
-        while time.monotonic()<deadline:
-            status=self.call('status')
-            if not status['active']:break
-            time.sleep(.05)
-        self.assertEqual(status['rounds'],0)
-        self.assertEqual(status['active'],[])
-        self.assertIn('failed',self.prcomments.read_text())
-        self.assertIn('9',self.prcomments.read_text())
-
     def test_malformed_return_still_consumes_round_and_is_published_whole(self):
-        self.verdict.write_text('Done, trust me.\n');self.start();self.published()
+        self.verdict.write_text('Done, trust me.\n');self.start_and_return();self.published()
         status=self.call('status')
         self.assertEqual(status['rounds'],1)
         self.assertEqual(status['next'],'evidence-fix-decision')
@@ -1418,18 +1165,17 @@ while hold and not Path(hold).exists() and time.monotonic()<deadline: time.sleep
 
     def test_publication_is_idempotent_after_transient_executor_scratch_is_removed(self):
         import shutil
-        result=self.start();self.published()
+        result=self.start_and_return();self.published()
         shutil.rmtree(Path(result['run']['brief']).parent)
-        self.call('publish','--attempt',str(result['attempt']))
+        self.call('publish','--attempt',str(result['attempt']),'--verdict',str(self.verdict))
         self.assertEqual(self.call('status')['rounds'],1)
 
     def test_stale_head_verdict_is_published_but_cannot_accept_current_head(self):
-        result=self.call('start','--architecture-level','no','--output',str(self.out),'--implementation','claude')
+        result=self.call('start','--architecture-level','no','--output',str(self.out))
         pr=json.loads(self.prfile.read_text());pr['headRefOid']='f'*40;self.prfile.write_text(json.dumps(pr))
-        # Native return is supplied whole by the caller; it must retain the pinned reviewer identity.
-        self.verdict.write_text(re.sub(r'^Reviewer: .*? — reviewed',
-            'Reviewer: Claude subagent, opus at high, read-only — reviewed',self.verdict.read_text()))
-        self.call('publish','--attempt',str(result['attempt']),'--verdict',str(self.verdict))
+        # The verdict reviews the pinned head; the PR has since moved, so it is published whole
+        # but cannot accept the current head.
+        self.return_verdict(result)
         self.assertTrue(self.published()[-1]['body'].endswith(self.verdict.read_text()))
         self.assertEqual(self.call('status')['next'],'full-review')
 
