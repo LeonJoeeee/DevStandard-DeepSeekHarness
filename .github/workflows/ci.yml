@@ -235,7 +235,7 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/devstandard-claude" @anthropic-ai/claude-code@2.1.268
           echo "$RUNNER_TEMP/devstandard-claude/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Real Claude plugin, native Agent and CLI role hooks
-        run: python3 .github/test-claude-runtime.py --dispatch-cli --log-dir "$RUNNER_TEMP/devstandard-claude-runtime"
+        run: python3 .github/test-claude-runtime.py --log-dir "$RUNNER_TEMP/devstandard-claude-runtime"
       - name: Preserve Claude runtime failure evidence
         if: failure()
         run: |
@@ -245,7 +245,7 @@ jobs:
           root = Path(os.environ['RUNNER_TEMP']) / 'devstandard-claude-runtime'
           for path in sorted(root.glob('*')):
               if path.is_file() and path.name.endswith(('.stdout.jsonl', '.stderr.log',
-                  'summary.json', 'dispatch-cli.process.log', 'dispatch-cli.output.jsonl', 'dispatch-cli.exit-code')):
+                  'summary.json')):
                   print(f'--- {path.name} ---')
                   print(path.read_text()[-20000:])
           PY
