@@ -33,6 +33,8 @@ jobs:
         run: python3 .github/check-agents.py
       - name: dsh bundle rows, the one model anchor, and the generated role personas
         run: python3 .github/check-dsh-bundle.py
+      - name: The dsh guard's ported engine matches the policy it was ported from
+        run: python3 .github/check-dsh-guard.py
       - name: Complete role delivery and overflow fallback
         run: python3 .github/test-session-start.py
       - name: Every shipped artifact arrives whole through its declared handlers
