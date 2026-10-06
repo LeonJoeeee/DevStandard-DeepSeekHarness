@@ -595,56 +595,40 @@ def tool_decision(role, tool, arguments):
     content whatever words it carries. Only a shell tool supplies command text for the
     role's word list to decide.
     """
-    if tool not in ('Bash', 'exec_command'):
+    # Both carriers that are live today: dsh's shell tool is `bash` (model-facing, lowercase),
+    # and the in-tree Claude hook still sends `Bash` until `hooks/` leaves the shipped set
+    # (ADR 0064). The name that goes now is the Claude CLI's exec tool, which nothing sends.
+    if tool not in ('bash', 'Bash'):
         return None
     return command_refusal(role, arguments.get('command', arguments.get('cmd', '')) or '')
 
 
-# One helper-table row: the work, the Codex `model` at `effort` cell, then the Claude `model` cell.
-HELPER_ROW = re.compile(r'^\| ([^|`]+?) \| `([^`|]+)` at `([^`|]+)` \| `([^`|]+)` \|$', re.M)
+# ---------------------------------------------------------------------------
+# The port's one model anchor (ADR 0066). The two delegation rows in `cordis.patch.yml` carry
+# `agentOptions` for the single dispatched-role route; the worker row states it and the reviewer
+# row aliases it. `.github/check-dsh-bundle.py` fails if the model id is stated anywhere else, so
+# this reader has one place to look and a gate keeping it there. There are no tiers, no per-kind
+# routing and no helper table: every dispatched role, the reviewer included, takes one route.
+# ---------------------------------------------------------------------------
+ANCHOR_PATH = 'cordis.patch.yml'
 
 
-def helper_settings(root):
-    """The helper table's rows as (work, Codex model, Codex effort, Claude model), from the page.
+def model_anchor(root):
+    """The one dispatched-role route as (model, effort), read from `cordis.patch.yml`.
 
-    `reference/orchestrator.md`'s **Model and effort** section states the table once. A Codex
-    role never reads that page, and the CI gate that proves no Codex model on it is repeated sweeps
-    live pages only, so a literal here or on another page would go stale unseen (#411). Reading it
-    keeps the value single-sited; a table that is gone refuses rather than dispatching nothing.
+    Parsed as YAML so the anchor/alias is resolved rather than scraped; `require` refuses a file
+    that states no route, more than one, or a route missing either half.
     """
-    rows = HELPER_ROW.findall((Path(root) / 'reference/orchestrator.md').read_text())
-    require(rows, 'the dispatch page states no helper table')
-    return rows
-
-
-def judgment_subagent_setting(root):
-    """The Codex default for a dispatched role's own subagent: the ordinary-judgment helper row.
-
-    That row is what `agents.default_subagent_*` below configures, not the anchored
-    worker/reviewer row `scripts/dispatch` reads for the role itself. A reworded row refuses loudly
-    instead of leaving a stale model name in the dispatched configuration.
-    """
-    rows = [row for row in helper_settings(root) if row[0].startswith('Ordinary judgment')]
-    require(len(rows) == 1, 'the dispatch page states no Codex ordinary-judgment helper setting')
-    return rows[0][1], rows[0][2]
-
-
-def codex_helper_line(root):
-    """The packet line that tells a Codex worker or reviewer its own helpers' routing (#460)."""
-    return ("Helpers: your own subagents go through Codex's native subagent tool, never a Claude "
-            "process, and each takes the model and effort its work needs — "
-            + '; '.join(f'{work}: `{model}` at `{effort}`'
-                        for work, model, effort, _ in helper_settings(root)) + '.')
-
-
-def codex_hook_config(root, role):
-    import shlex
-    require(role in ('worker', 'reviewer'), 'executor role required')
-    command = shlex.join([str(Path(root) / 'hooks/pre-tool-use'), '--role', role])
-    model, effort = judgment_subagent_setting(root)
-    return '\n'.join([
-        'hooks.PreToolUse=[{matcher=".*",hooks=[{type="command",command='
-        + json.dumps(command) + ',timeout=30}]}]',
-        'agents.default_subagent_model=' + json.dumps(model),
-        'agents.default_subagent_reasoning_effort=' + json.dumps(effort),
-    ])
+    import yaml
+    routes = []
+    for row in yaml.safe_load((Path(root) / ANCHOR_PATH).read_text()) or []:
+        for entry in (row.get('insert') or []):
+            options = (entry.get('config') or {}).get('agentOptions')
+            if isinstance(options, dict):
+                routes.append((options.get('model'), options.get('reasoningEffort')))
+    require(routes, f'{ANCHOR_PATH} states no agentOptions route')
+    require(all(route == routes[0] for route in routes),
+            f'{ANCHOR_PATH} states more than one route: {routes!r}')
+    model, effort = routes[0]
+    require(model and effort, f'{ANCHOR_PATH} route lacks a model or effort')
+    return model, effort

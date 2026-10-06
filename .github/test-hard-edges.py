@@ -922,7 +922,7 @@ class RoleRuleTest(unittest.TestCase):
             for word, witness in rows:
                 for position, wrap, refused in POSITIONS:
                     candidate = wrap(witness)
-                    for tool, field in (('Bash', 'command'), ('exec_command', 'cmd')):
+                    for tool, field in (('Bash', 'command'), ('bash', 'command')):
                         index = seen
                         seen += 1
                         if not selected_probe(index, shard):
@@ -945,7 +945,7 @@ class RoleRuleTest(unittest.TestCase):
     def test_ordinary_work_is_admitted_for_every_role(self):
         for role, commands in ADMITTED.items():
             for command in commands + TEXT_IS_NOT_A_COMMAND:
-                for tool, field in (('Bash', 'command'), ('exec_command', 'cmd')):
+                for tool, field in (('Bash', 'command'), ('bash', 'command')):
                     with self.subTest(role=role, command=command, tool=tool):
                         self.assertEqual(role_hook(command, tool, field, role=role), {})
 
@@ -953,7 +953,7 @@ class RoleRuleTest(unittest.TestCase):
         """#425: one probe per struck-out word, in both tool-input formats."""
         for role, rows in ADMITTED_SINCE_THE_SHRINK.items():
             for removed, command in rows:
-                for tool, field in (('Bash', 'command'), ('exec_command', 'cmd')):
+                for tool, field in (('Bash', 'command'), ('bash', 'command')):
                     with self.subTest(role=role, removed=removed, command=command, tool=tool):
                         self.assertEqual(role_hook(command, tool, field, role=role), {})
 
@@ -1206,10 +1206,14 @@ class RoleRuleTest(unittest.TestCase):
         self.assertIsNone(h.tool_decision('worker', 'Agent', {}))
         self.assertIsNone(h.tool_decision('worker', 'spawn_agent', {}))
         self.assertIsNone(h.tool_decision('orchestrator', 'SendMessage', {}))
-        # A shell tool is still judged, by its command's own text and nothing else.
-        self.assertIsNotNone(h.tool_decision('worker', 'Bash', {'command': 'git merge origin/main'}))
-        self.assertIsNotNone(h.tool_decision('reviewer', 'exec_command',
-                                             {'cmd': 'gh api repos/o/r -X POST'}))
+        # A shell tool is still judged, by its command's own text and nothing else. Both shell
+        # names the two live carriers send reach the engine; `exec_command`, the Claude CLI's
+        # exec tool, is the name that goes with the Codex surface (#14).
+        for name in ('Bash', 'bash'):
+            with self.subTest(shell=name):
+                self.assertIsNotNone(h.tool_decision('worker', name,
+                                                     {'command': 'git merge origin/main'}))
+        self.assertIsNone(h.tool_decision('worker', 'exec_command', {'cmd': 'git merge origin/main'}))
         for name in ('READ_TOOLS', 'WORKER_TOOLS', 'REVIEWER_TOOLS', 'tool_refusal'):
             with self.subTest(name=name):
                 self.assertFalse(hasattr(h, name), f'{name} should be gone with the allowlist')
@@ -1801,68 +1805,35 @@ class RoundCliTest(AcceptanceTest):
 
 
 class ApiTest(unittest.TestCase):
-    def test_codex_config_sets_judgment_subagent_defaults_for_both_roles(self):
-        import tomllib
-        for role in ('worker', 'reviewer'):
-            with self.subTest(role=role):
-                result = subprocess.run([str(ROOT / 'scripts/guard'), 'codex-config',
-                                         '--role', role], text=True, capture_output=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                config = tomllib.loads(result.stdout)
-                self.assertEqual(config.get('agents'), {
-                    'default_subagent_model': 'gpt-6-sol',
-                    'default_subagent_reasoning_effort': 'high',
-                })
+    def test_the_model_anchor_is_read_from_cordis_patch_yml_alone(self):
+        """ADR 0066: one dispatched-role route, stated once in `cordis.patch.yml`.
 
-    def test_codex_subagent_defaults_are_read_from_the_page_not_restated(self):
-        """The literals above are the page's, so a page change must move them (#411).
-
-        The gate that proves no Codex model on `reference/orchestrator.md` is repeated sweeps
-        live pages only and cannot see a literal in this repository's scripts, so what keeps the
-        value single-sited is that `codex_hook_config` reads it: the Codex cell of the helper
-        table's ordinary-judgment row (#460). A page whose table no longer states that row
-        refuses rather than dispatching a stale one.
+        The worker row holds the anchor and the reviewer row aliases it, and
+        `.github/check-dsh-bundle.py` fails if the model id appears anywhere else in the shipped
+        files, so this reader has one place to look and a gate keeping it there. The two tier
+        tables, the Codex column and the helper table are gone with it.
         """
-        import tomllib
         h = module()
-        page = (ROOT / 'reference/orchestrator.md').read_text()
-        with tempfile.TemporaryDirectory(prefix='codex-config-page-') as directory:
+        self.assertEqual(h.ANCHOR_PATH, 'cordis.patch.yml')
+        self.assertEqual(h.model_anchor(ROOT), ('deepseek-v4.1-flash', 'max'))
+        with tempfile.TemporaryDirectory(prefix='anchor-') as directory:
             root = Path(directory)
-            (root / 'reference').mkdir()
-            target = root / 'reference/orchestrator.md'
-
-            target.write_text(page)
-            self.assertEqual(tomllib.loads(h.codex_hook_config(root, 'worker'))['agents'],
-                             tomllib.loads(h.codex_hook_config(ROOT, 'worker'))['agents'])
-
-            renamed = page.replace('| Ordinary judgment (research, checking) | `gpt-6-sol` at `high` |',
-                                   '| Ordinary judgment (research, checking) | `gpt-7-vega` at `xhigh` |')
-            self.assertNotEqual(renamed, page)
-            target.write_text(renamed)
-            self.assertEqual(tomllib.loads(h.codex_hook_config(root, 'reviewer'))['agents'], {
-                'default_subagent_model': 'gpt-7-vega',
-                'default_subagent_reasoning_effort': 'xhigh',
-            })
-
-            target.write_text(page.replace('| Ordinary judgment (', '| Everyday thinking ('))
+            path = root / h.ANCHOR_PATH
+            # A file stating no `agentOptions` route refuses rather than dispatching nothing.
+            path.write_text('- insert:\n    - id: x\n      name: y\n')
             with self.assertRaises(h.Refusal):
-                h.codex_hook_config(root, 'worker')
-
-    def test_codex_config_runs_hook_with_fixed_role(self):
-        h = module()
-        self.assertTrue(hasattr(h, 'codex_hook_config'), 'Codex hook carrier missing')
-        import tomllib
-        import shlex
-        config = tomllib.loads(h.codex_hook_config(ROOT, 'worker'))
-        command = config['hooks']['PreToolUse'][0]['hooks'][0]['command']
-        with tempfile.TemporaryDirectory(prefix='codex-config-') as project:
-            result = subprocess.run(shlex.split(command), input=json.dumps({'tool_name':'Bash',
-                'tool_input':{'command':'gh pr merge 0 --squash'}, 'cwd':project}),
-                text=True, capture_output=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        reason = json.loads(result.stdout)['hookSpecificOutput']['permissionDecisionReason']
-        self.assertTrue(reason.startswith("worker role refuses a command carrying 'merge'"), reason)
-        self.assertIn(REFUSAL_PAGE['worker'], reason)
+                h.model_anchor(root)
+            # Two rows that do not agree on the route are not the one anchor.
+            path.write_text(
+                '- insert:\n'
+                '    - id: worker\n'
+                '      config:\n'
+                '        agentOptions: &r\n          model: one\n          reasoningEffort: max\n'
+                '    - id: reviewer\n'
+                '      config:\n'
+                '        agentOptions:\n          model: two\n          reasoningEffort: max\n')
+            with self.assertRaises(h.Refusal):
+                h.model_anchor(root)
 
     def test_paginated_api_keeps_later_revocation(self):
         h = module()

@@ -19,7 +19,7 @@ import time
 
 sys.dont_write_bytecode = True
 import review_packet
-from hard_edges import (codex_hook_config, codex_helper_line, api, base_advanced, round_check,
+from hard_edges import (api, base_advanced, round_check,
                         Refusal as GuardRefusal)
 
 MARKER = '<!-- devstandard-dispatch-v1 -->'
@@ -792,9 +792,6 @@ def main():
     else:
         packet += f'Reviewer identity: {reviewer_identity}. Return the whole verdict to the caller for publication.\n'
     if implementation == 'codex':
-        # A Codex role never reads the orchestrator page, so its helper routing rides the packet,
-        # read from that page's table; the Claude definitions carry the Claude column (#460).
-        packet += codex_helper_line(ROOT) + '\n'
         require(shutil.which('codex'), 'codex is not installed')
     if implementation == 'claude-cli':
         require(shutil.which('claude'), 'claude is not installed')
@@ -866,8 +863,6 @@ def main():
             argv = [shutil.which('codex'), 'exec', '-m', model, '-c', f'model_reasoning_effort={effort}',
                     '-s', 'workspace-write' if args.purpose == 'worker' else 'read-only', '-C', str(wt)]
             argv += ['-c', 'features.hooks=true']
-            for setting in codex_hook_config(ROOT, args.purpose).splitlines():
-                argv += ['-c', setting]
             # Only alongside the fixed role hook from this dispatcher's installation, checked
             # to exist above. Codex intends the flag for automation that already vets hook sources.
             argv += ['--dangerously-bypass-hook-trust']

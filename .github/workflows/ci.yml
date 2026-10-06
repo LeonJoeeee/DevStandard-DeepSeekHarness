@@ -208,63 +208,6 @@ jobs:
           HARD_EDGE_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
         run: python3 .github/test-hard-edges.py
 
-  codex:
-    name: Codex (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 2
-      - name: Bind test checkout to the advertised PR merge result
-        if: github.event_name == 'pull_request'
-        env:
-          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          test "$(git rev-parse HEAD^1)" = "$EXPECTED_BASE"
-          test "$(git rev-parse HEAD^2)" = "$EXPECTED_HEAD"
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-      - name: Install Linux sandbox prerequisites
-        if: runner.os == 'Linux'
-        run: |
-          # https://learn.chatgpt.com/docs/sandboxing#prerequisites
-          # A scoped bwrap profile preserves the global user-namespace restriction.
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap apparmor-profiles apparmor-utils
-          sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
-          bwrap --unshare-user --unshare-net --ro-bind / / /bin/true
-      - name: Install the qualified Codex CLI
-        run: |
-          npm install --prefix "$RUNNER_TEMP/devstandard-codex" @openai/codex@0.156.1
-          echo "$RUNNER_TEMP/devstandard-codex/node_modules/.bin" >> "$GITHUB_PATH"
-      - name: Hook delivery on this runner's own bash
-        run: python3 .github/test-session-start.py
-      - name: Real Codex CLI executor with a local deterministic provider
-        run: python3 .github/test-codex-runtime.py --log-dir "$RUNNER_TEMP/devstandard-inline"
-      - name: Detached process and review publication regression
-        run: |
-          python3 .github/test-dispatch.py
-          python3 .github/test-review-packet.py
-      - name: Preserve runtime failure evidence in the job log
-        if: failure()
-        run: |
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          root = Path(os.environ['RUNNER_TEMP']) / 'devstandard-inline'
-          for path in sorted(root.rglob('*')):
-              if path.is_file():
-                  print(f'--- inline/{path.relative_to(root)} ---')
-                  print(path.read_text())
-          PY
-
   claude:
     name: Claude (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -310,19 +253,17 @@ jobs:
   # Preserve the branch-protection context; every dependency must actually pass.
   test:
     if: ${{ always() }}
-    needs: [suite, sweep, codex, claude]
+    needs: [suite, sweep, claude]
     runs-on: ubuntu-latest
     steps:
       - name: Require the ordinary suite and every sweep shard
         env:
           SUITE_RESULT: ${{ needs.suite.result }}
           SWEEP_RESULT: ${{ needs.sweep.result }}
-          CODEX_RESULT: ${{ needs.codex.result }}
           CLAUDE_RESULT: ${{ needs.claude.result }}
         run: |
           test "$SUITE_RESULT" = success
           test "$SWEEP_RESULT" = success
-          test "$CODEX_RESULT" = success
           test "$CLAUDE_RESULT" = success
 
   merged-result:

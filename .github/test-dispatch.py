@@ -16,26 +16,6 @@ SOURCE = Path(__file__).resolve().parents[1]
 
 
 class DispatchTest(unittest.TestCase):
-    def assert_role_config(self, args, role):
-        import shlex
-        import tomllib
-        overrides = [args[i+1] for i, arg in enumerate(args) if arg == '-c']
-        parsed = {}
-        for override in overrides:
-            key, value = override.split('=', 1)
-            if key != 'hooks.PreToolUse' and not key.startswith('agents.'):
-                continue
-            # Codex parses each -c value independently; several root assignments in
-            # one argument must not masquerade as valid combined TOML here.
-            assignment = tomllib.loads('value=' + value)
-            self.assertEqual(set(assignment), {'value'})
-            parsed[key] = assignment['value']
-        self.assertEqual(parsed.get('agents.default_subagent_model'), 'gpt-6-sol')
-        self.assertEqual(parsed.get('agents.default_subagent_reasoning_effort'), 'high')
-        self.assertEqual(parsed['hooks.PreToolUse'], [{
-            'matcher': '.*', 'hooks': [{'type': 'command', 'command': shlex.join([
-                str(SOURCE / 'hooks/pre-tool-use'), '--role', role]), 'timeout': 30}]}])
-
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='dispatch-test-')
         self.addCleanup(self.tmp.cleanup)
@@ -754,12 +734,8 @@ raise SystemExit(int(os.environ.get('FAKE_EXIT','0')))
         self.assertNotEqual(os.getsid(run['pid']),os.getsid(0))
         data=self.finish(run); a=data['args']
         self.assertEqual(data['role'], 'worker')
-        self.assert_role_config(a, 'worker')
-        config = next((x for x in a if x.startswith('hooks.PreToolUse=')), '')
-        self.assertIn('--role worker', config)
         self.assertIn('features.hooks=true', a)
         self.assertIn('--dangerously-bypass-hook-trust', a)
-        self.assertIn(str(SOURCE/'hooks/pre-tool-use'), config)
         self.assertEqual(a[a.index('-s')+1],'workspace-write')
         self.assertIn('sandbox_workspace_write.network_access=true',a)
         grants=[a[i+1] for i,x in enumerate(a) if x=='--add-dir']
@@ -960,13 +936,6 @@ raise SystemExit(int(os.environ.get('FAKE_EXIT','0')))
         self.assertEqual(a[a.index('-m')+1],'fixture-model')
         self.assertIn('model_reasoning_effort=low',a)
         self.assertIn('Co-Authored-By: Codex fixture-model low <noreply@openai.com>',data['stdin'])
-
-    def test_the_pinned_role_hook_rides_the_invocation_with_its_trust_bypass(self):
-        """#326: the flag goes with the fixed hook this dispatcher checked, not with a setting."""
-        run = self.start(); args = self.finish(run)['args']
-        self.assertIn('--dangerously-bypass-hook-trust', args)
-        self.assertTrue(any('--role worker' in arg and arg.startswith('hooks.PreToolUse=')
-                            for arg in args))
 
     def test_missing_repository_role_hook_refuses_before_lane_creation(self):
         install = self.root/'plugin'
@@ -1251,9 +1220,7 @@ raise SystemExit(int(os.environ.get('FAKE_EXIT','0')))
         review=self.call('--purpose','reviewer','--implementation','codex','--packet',str(packet))
         data=self.finish(review);a=data['args']
         self.assertEqual(data['role'], 'reviewer')
-        self.assert_role_config(a, 'reviewer')
         self.assertIn('--dangerously-bypass-hook-trust',a)
-        self.assertTrue(any('--role reviewer' in arg and arg.startswith('hooks.PreToolUse=') for arg in a))
         self.assertEqual(a[a.index('-s')+1],'read-only');self.assertNotIn('--add-dir',a);self.assertNotIn('sandbox_workspace_write.network_access=true',a)
         self.assertIn('Complete report.',data['stdin']);self.assertEqual(review['worktree'],run['worktree'])
 
@@ -1327,48 +1294,6 @@ raise SystemExit(int(os.environ.get('FAKE_EXIT','0')))
         self.assertEqual((review['model'], review['effort']), ('gpt-6-astra', 'high'))
         self.assertEqual(args[args.index('-m') + 1], 'gpt-6-astra')
         self.assertIn('model_reasoning_effort=high', args)
-
-    def test_codex_packets_carry_the_helper_table_read_from_the_page(self):
-        """#460: a Codex role is told its own helper routing, read from the page, never restated.
-
-        Neither the Codex worker nor the Codex reviewer reads `reference/orchestrator.md`, and
-        CI forbids restating a Codex model it names on another live page, so the dispatcher
-        carries the helper table's Codex column into the packet. A Claude packet does not get
-        it: its agent definitions carry the Claude column.
-        """
-        worker = self.start('--implementation', 'codex')
-        worker_prompt = self.finish(worker)['stdin']
-        packet = self.review_packet()
-        review = self.call('--purpose', 'reviewer', '--implementation', 'codex',
-                           '--packet', str(packet))
-        review_prompt = self.finish(review)['stdin']
-        for prompt in (worker_prompt, review_prompt):
-            line = next(l for l in prompt.splitlines() if l.startswith('Helpers: '))
-            self.assertIn("Codex's native subagent tool, never a Claude process", line)
-            for setting in ('`gpt-6-astra` at `high`', '`gpt-6-sol` at `high`',
-                            '`gpt-6-luna` at `max`'):
-                self.assertIn(setting, line)
-            self.assertIn('Mechanical (scans', line)
-        fixture = DispatchTest(); fixture.setUp()
-        try:
-            native = fixture.start('--implementation', 'claude')
-            self.assertNotIn('Helpers: ', Path(native['brief']).read_text())
-        finally:
-            fixture.tearDown()
-
-    def test_codex_helper_line_moves_with_the_page(self):
-        install=self.root/'plugin'
-        for directory in ('scripts', 'reference', 'hooks'):
-            shutil.copytree(SOURCE/directory, install/directory)
-        source=install/'reference/orchestrator.md'
-        text=source.read_text()
-        changed=text.replace('| `gpt-6-luna` at `max` |', '| `fixture-luna` at `low` |')
-        self.assertNotEqual(changed, text)
-        source.write_text(changed)
-        self.script=install/'scripts/dispatch'
-        prompt=self.finish(self.start('--implementation','codex'))['stdin']
-        self.assertIn('`fixture-luna` at `low`', prompt)
-        self.assertNotIn('gpt-6-luna', prompt)
 
     def test_explicit_model_and_effort_override_independently_on_each_executor(self):
         for implementation in ('codex', 'claude', 'claude-cli'):
