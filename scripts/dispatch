@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 """Dispatch one DevStandard lane. Requires Python 3.9+, git, and gh on macOS or Linux."""
 import argparse
-from contextlib import contextmanager, nullcontext
 import errno
-import fcntl
 import json
 import os
 from pathlib import Path
 import re
 import shlex
 import shutil
-import signal
-import stat
 import subprocess
 import sys
 import tempfile
@@ -19,18 +15,10 @@ import time
 
 sys.dont_write_bytecode = True
 import review_packet
-from hard_edges import (api, base_advanced, round_check,
+from hard_edges import (ANCHOR_PATH, api, base_advanced, model_anchor, round_check,
                         Refusal as GuardRefusal)
 
 MARKER = '<!-- devstandard-dispatch-v1 -->'
-NATIVE_IMPLEMENTATIONS = ('claude',)
-# A native handle the dispatcher never observes. `codex-native` is no longer offered (#459, ADR
-# 0063): Codex stopped hosting the method, and with it the receipt a Codex host forwarded to its
-# own spawn tool. A lane recorded before then may still carry such a run, and like a Claude Agent
-# handle it was the caller's own, so it is read the same way and never blocks its lane.
-NATIVE_RECORDS = NATIVE_IMPLEMENTATIONS + ('codex-native',)
-LEGACY_LOST_ATTESTATION = 'Authoritative inspection of the originating host/environment found no executor or supervisor owned by this exact run.'
-LOST_ATTESTATION = 'Caller attests that authoritative inspection of the originating host/environment found no executor or supervisor owned by this exact run; the dispatcher has not verified that inspection.'
 
 
 class Refusal(Exception):
@@ -110,101 +98,28 @@ def filled(value, name):
     return value.strip()
 
 
-def route_setting(purpose, implementation, model=None, effort=None):
-    """The role's anchored row on the page fixes both knobs; each explicit field wins independently.
+def route():
+    """The one dispatched-role route as (model, effort), and the anchor file it was read from.
 
-    A row this cannot find or parse is the page's defect, and CI enforces its cell form. Here it
-    only warns and falls back to whatever the caller stated explicitly; the refusal is reserved for
-    the knob nothing supplied, which is the one thing a dispatch cannot invent (#436).
+    The bundle's two delegation rows carry one `agentOptions` (ADR 0066), so this reads the anchor
+    `scripts/hard_edges.py` exposes rather than restating a model anywhere in the method. A file
+    that states no route, more than one, or a route missing either half is refused there.
     """
-    page = ROOT / 'reference/orchestrator.md'
-    try:
-        text = page.read_text()
-    except OSError:
-        text = ''
-    rows = [[cell.strip() for cell in line.split('|')[1:-1]]
-            for line in text.splitlines() if line.startswith('|')]
-    matches = [row for row in rows if row and row[0] == purpose]
-    codex = implementation == 'codex'
-    match = (re.fullmatch(r'`([^`]+)` at `([^`]+)`', matches[0][1 if codex else 2])
-             if len(matches) == 1 and len(matches[0]) == 3 else None)
-    if match is None:
-        print(f'dispatch warning: no readable anchored {purpose} row in {page}; '
-              'using the explicit --model/--effort instead', file=sys.stderr)
-    model = model if model is not None else (match[1] if match else None)
-    effort = effort if effort is not None else (match[2] if match else None)
-    require(model and effort, f'no readable anchored {purpose} row in {page}, and no explicit '
-            '--model and --effort to use instead')
-    return filled(model, 'model'), filled(effort, 'effort')
+    model, effort = model_anchor(ROOT)
+    return model, effort, ROOT / ANCHOR_PATH
 
 
-def mcp_tool_admission(binary):
-    """Let a dispatched Codex CLI child actually call the MCP servers its host has attached.
+def delegation_pointer(brief, purpose):
+    """The short instruction a spawned child gets: read the brief, which holds the exact bytes.
 
-    `codex exec` is non-interactive, so its approval policy is `never`, and `never` auto-rejects
-    every MCP tool call: the child sees the tools, is refused on the call, and cannot tell that
-    apart from an unreachable server. Measured on codex-cli 0.153.4 (issue #358): `exec` ignores
-    every `approval_policy` value, no server-independent configuration field exists, and
-    `--approve-for-me` — the one server-independent route — cannot be combined with `-s`, so it
-    would cost the per-role OS sandbox that `reference/orchestrator.md` builds the gating
-    reviewer on. `--dangerously-bypass-approvals-and-sandbox` would cost the same thing. What is
-    left is the per-server key, which composes with both sandbox modes.
-
-    The CLI enumerates the servers, so no host configuration file is read or edited, and a dotted
-    override merges into the host's table rather than replacing it, so no server definition is
-    lost. Returns the admitted names and, when something was not admitted, the notice that says so
-    on the issue — a child whose MCP calls will be refused must not look like one whose servers
-    are merely down.
+    The packet is as long as the issue record it carries, so it travels as a file the child opens
+    rather than as an argument, and the receipt points at it byte for byte.
     """
-    try:
-        listing = subprocess.run([binary, 'mcp', 'list', '--json'], capture_output=True,
-                                 text=True, timeout=60)
-        rows = json.loads(listing.stdout or '[]') if listing.returncode == 0 else None
-    except (OSError, subprocess.SubprocessError, ValueError):
-        rows = None
-    if rows is None or not isinstance(rows, list):
-        return [], ('MCP servers could not be enumerated (`codex mcp list --json` did not return a '
-                    'listing), so this child admits no MCP tool call: a tool it can see but cannot '
-                    'call is a harness limit to return, never an outage to work around '
-                    '(`reference/worker.md`).')
-    names = sorted({row['name'] for row in rows if isinstance(row, dict)
-                    and row.get('name') and row.get('enabled', True)})
-    # A dotted `-c` path keeps quote characters inside a segment, so a name needing quoting
-    # cannot be addressed this way. Name it rather than leaving a silently refused tool.
-    admitted = [name for name in names if re.fullmatch(r'[A-Za-z0-9_-]+', name)]
-    unaddressable = [name for name in names if name not in admitted]
-    return admitted, (('MCP servers whose names a dotted -c override cannot address, left '
-                       'unadmitted: ' + ', '.join(unaddressable) + '. Their tool calls are refused '
-                       'by policy rather than by an outage, which is a harness limit to return '
-                       '(`reference/worker.md`).') if unaddressable else None)
-
-
-CODEX_WORKER_MECHANICS = ('<!-- BEGIN CODEX WORKER MECHANICS -->\n',
-                          '<!-- END CODEX WORKER MECHANICS -->\n')
-
-
-def codex_worker_mechanics():
-    """The Codex harness section a dispatched Codex worker is delivered with its role page.
-
-    `reference/worker.md` is the shared contract every executor gets; the mechanics of recovering a
-    binding, of spawning, and of the sandbox differ per harness, so each family reads its own page
-    and never the other's (ADR 0061). A Claude worker receives `reference/harness-claude.md`
-    through the agent definition body, which the harness loads as its system prompt. A Codex CLI
-    worker has no such carrier — dispatch installs only the fixed role hook, and a startup hook
-    that still runs there from a pre-2.0 Codex install is silenced by `DEVSTANDARD_ROLE` — which
-    is why the brief carries this section for `codex` instead.
-
-    Only the marked worker-facing section travels. The rest of that page is orchestrator-facing:
-    it tells the dispatching session how to run Codex, and a worker must not read it as its own
-    instruction.
-    """
-    page = (ROOT / 'reference/harness-codex.md').read_text()
-    begin, end = CODEX_WORKER_MECHANICS
-    require(page.count(begin) == 1 and page.count(end) == 1,
-            'reference/harness-codex.md must mark exactly one worker-facing section')
-    block = page.split(begin, 1)[1].split(end, 1)[0].strip('\n')
-    require(block, 'the marked Codex worker-facing section is empty')
-    return '\n' + block + '\n'
+    if purpose == 'reviewer':
+        return (f"Read {brief} IN FULL using Read before judging. It contains the complete current "
+                "contract, packet, and pinned Git evidence. Return the whole verdict to the caller.")
+    return (f"Read {brief} IN FULL using Read before starting. It is your complete task packet and "
+            "the contract it points at.")
 
 
 def reviewer_role(value, identity):
@@ -283,137 +198,6 @@ def publish(project, repo, issue, record, scratch):
     return run('gh', 'issue', 'comment', str(issue), '--repo', repo, '--body-file', str(path), cwd=project)
 
 
-def artifact(record, key, name):
-    brief = Path(record.get('brief', ''))
-    require(brief.is_absolute() and brief.name == 'brief.txt', 'malformed run brief identity')
-    value = record.get(key)
-    if value is None:
-        return None  # Legacy/missing metadata is unknown, never inferred completion.
-    path = Path(value)
-    require(path == brief.parent / name and
-            resolved(path, key) == resolved(brief.parent, 'run scratch') / name,
-            f'malformed {key}: must name {name} in the exact run scratch')
-    return path
-
-
-def completion_exit(record):
-    path = artifact(record, 'completion', 'exit-code')
-    if path is None:
-        return None
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except FileNotFoundError:
-        return None
-    with os.fdopen(fd) as stream:
-        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), 'malformed completion marker')
-        text = stream.read(64)
-    require(re.fullmatch(r'-?\d+\n?', text) and -255 <= int(text) <= 255,
-            'malformed completion marker; preserve evidence and reconcile the run')
-    return int(text)
-
-
-def launch_failure(record):
-    """The supervisor's own record that it never created an executor, or None.
-
-    Written only where `child is None`, by the process holding the lock, so it reports something
-    no later inspection can: that no executor of this run ever existed. It is read exactly like
-    the completion marker and, unlike one, releases the attempt without claiming an exit (#454).
-
-    `alive` does not consult it and needs nothing from it: a released lock already answers
-    "nothing is running", and what this adds is the reason, which publication reports and lane
-    reuse does not ask for. Reuse keeps the operator's inspection it has always required.
-    """
-    path = artifact(record, 'launch_failure', 'launch-failure')
-    if path is None:
-        return None
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except FileNotFoundError:
-        return None
-    with os.fdopen(fd) as stream:
-        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), 'malformed launch failure record')
-        text = stream.read(4096).strip()
-    require(text, 'malformed launch failure record; preserve evidence and reconcile the run')
-    return text
-
-
-@contextmanager
-def supervisor_lock(record):
-    """Open only the recorded existing lock; a missing file has no serialization authority."""
-    path = artifact(record, 'supervisor_lock', 'supervisor.lock')
-    stream = None
-    if path is not None:
-        try:
-            fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
-        except FileNotFoundError:
-            pass
-        else:
-            stream = os.fdopen(fd, 'r+')
-    try:
-        if stream is not None:
-            require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), 'malformed supervisor lock')
-            try:
-                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                yield True
-                return
-        yield False
-    finally:
-        if stream is not None:
-            stream.close()
-
-
-def reconciled(record):
-    if record.get('status') != 'reconciled-lost':
-        return False
-    data = record.get('reconciliation', {})
-    require(data.get('ownership_attestation') in (LOST_ATTESTATION, LEGACY_LOST_ATTESTATION)
-            and data.get('reason') and data.get('evidence'),
-            'malformed lost-run reconciliation')
-    return True
-
-
-def alive(record):
-    require(record.get('implementation') in ('codex', 'claude-cli'), 'unknown executor implementation')
-    if reconciled(record) or completion_exit(record) is not None:
-        return False
-    with supervisor_lock(record) as held:
-        if completion_exit(record) is not None:
-            return False
-        require(held, 'recorded CLI execution lost or unknown; inspect the originating host and use --reconcile-lost')
-        return True
-
-
-def wait_process(process, record):
-    """Wait only on our own Popen; never signal a PID recovered from an issue receipt."""
-    def cancel(signum, frame):
-        # A reaped child no longer owns its numeric PID/group; it may already be reused.
-        if process.poll() is None:
-            try:
-                os.killpg(process.pid, signum)
-                process.wait(timeout=3)
-            except ProcessLookupError:
-                pass
-            except subprocess.TimeoutExpired:
-                if process.poll() is None:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                process.wait(timeout=3)
-        raise Refusal('wait cancelled; inspect retained output and completion, or reconcile lost execution')
-
-    handlers = {sig: signal.signal(sig, cancel) for sig in (signal.SIGINT, signal.SIGTERM)}
-    try:
-        process.wait()
-        code = completion_exit(record)
-        require(code is not None, 'executor completion is lost or unknown; retained receipt requires reconciliation')
-        return code
-    finally:
-        for sig, handler in handlers.items():
-            signal.signal(sig, handler)
-
-
 def issue_comments(project, repo, issue):
     # gh issue view exposes GraphQL node IDs; only REST numeric IDs can PATCH comments.
     raw = run('gh', 'api', f'repos/{repo}/issues/{issue}/comments?per_page=100',
@@ -433,51 +217,6 @@ def issue_view(project, repo, issue):
     return data
 
 
-def exact_run(issue, brief):
-    history = records(issue['comments'])
-    lanes = [r for r in history if r.get('kind') == 'lane']
-    require(lanes, 'no current recorded lane')
-    lane = lanes[-1]
-    require(not any(r.get('status') == 'cleaned' and r.get('lane_id') == lane['lane_id'] for r in history),
-            'lane already cleaned')
-    matches = [(row, r) for row in issue['comments'] for r in records([row])
-               if r.get('kind') == 'run' and r.get('brief') == brief]
-    require(len(matches) == 1, 'reconciliation requires exactly one exact recorded run brief')
-    row, record = matches[0]
-    require(record.get('implementation') in ('codex', 'claude-cli'), 'reconciliation is only for CLI runs')
-    require(all(record.get(k) == lane.get(k) for k in
-                ('lane_id', 'issue', 'repo', 'branch', 'worktree', 'base', 'base_sha')),
-            'run differs from current recorded lane')
-    return row['id'], record, lane
-
-
-def reconcile_lost(args, project, repo, issue):
-    """Record the caller's lost-run finding on the exact run comment.
-
-    Two things here stop a second writer, and they are what this keeps: a supervisor still holding
-    the run's lock, and a completion marker present before or appearing during the reconciliation.
-    Re-comparing record fields, demanding a URL-shaped evidence string, or insisting on a
-    particular recorded status decided neither, so an operator's reading decides them now (#436).
-    """
-    _, original, lane = exact_run(issue, args.reconcile_lost)
-    lane_check(project, lane)
-    data = dict(reason=filled(args.reason, 'reconciliation reason'),
-                evidence=filled(args.evidence, 'reconciliation evidence'),
-                ownership_attestation=LOST_ATTESTATION)
-    with supervisor_lock(original) as held:
-        require(not held, 'recorded supervisor still running; reconciliation refused')
-        require(completion_exit(original) is None, 'valid completion exists; use normal completion handling')
-        cid, latest, _ = exact_run(issue_view(project, repo, args.issue), args.reconcile_lost)
-        require(completion_exit(latest) is None, 'completion appeared during reconciliation; use normal completion handling')
-        result = dict(latest, status='reconciled-lost', reconciliation=data)
-        body = MARKER + '\nLost execution reconciled; no executor exit or task acceptance is claimed.\n```json\n' + json.dumps(result, indent=2) + '\n```\n'
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json') as payload:
-            json.dump({'body':body},payload); payload.flush()
-            require(completion_exit(latest) is None, 'completion appeared during reconciliation; use normal completion handling')
-            run('gh','api',f'repos/{repo}/issues/comments/{cid}','--method','PATCH','--input',payload.name,cwd=project)
-        return result
-
-
 def lane_check(project, lane):
     """Bound where a later `worktree remove` and `branch -D` would land: this repository, and a
     linked worktree rather than its main checkout. Whether the recorded path is the worktree root
@@ -491,60 +230,7 @@ def lane_check(project, lane):
             'recorded lane is not a linked worktree')
 
 
-def supervisor(scratch, lock_fd):
-    """Own the inherited lock until a real CLI return is atomically recorded."""
-    signal.signal(signal.SIGHUP, signal.SIG_IGN)
-    os.set_inheritable(lock_fd, False)  # The CLI cannot keep our ownership lock alive.
-    scratch = Path(scratch)
-    child = None
-    cancelled = False
-
-    def cancel(signum, frame):
-        nonlocal cancelled
-        cancelled = True
-        if child is not None and child.poll() is None:
-            child.send_signal(signum)
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(sig, cancel)
-    try:
-        deadline = time.monotonic() + 60
-        while not (scratch / 'launch').exists():
-            require(not cancelled and time.monotonic() < deadline,
-                    'lane publication did not complete; executor was not launched')
-            time.sleep(.05)
-        require(not cancelled, 'launch cancelled before executor start')
-        command = json.loads((scratch / 'command.json').read_text())
-        # Every CLI executor takes its prompt on stdin: a packet over Linux's 128 KiB
-        # single-argument limit died at exec while it rode argv (#454). `stdout` is optional;
-        # without it the child inherits this supervisor's, which is the lane's process log.
-        with open(command['stdin']) as stdin, \
-                (open(command['stdout'], 'w') if command.get('stdout') else nullcontext()) as stdout:
-            child = subprocess.Popen(command['argv'], cwd=command['cwd'], stdin=stdin, stdout=stdout)
-        # A signal arriving during Popen must not leave the just-created child running.
-        if cancelled:
-            child.terminate()
-        code = child.wait()
-        tmp = scratch / 'exit-code.tmp'
-        tmp.write_text(str(code) + '\n')
-        tmp.replace(scratch / 'exit-code')
-        return code
-    except Exception as error:
-        print(f'dispatch supervisor: {error}', flush=True)
-        if child is None:
-            # Nothing was ever launched, and this process is the only one that can say so: it
-            # holds the lock and created no child. Recording that is not a completion marker —
-            # it is the opposite, and it is what lets a caller tell an executor that crashed
-            # from one that never started (#454).
-            tmp = scratch / 'launch-failure.tmp'
-            tmp.write_text(str(error) + '\n')
-            tmp.replace(scratch / 'launch-failure')
-        return 125  # No observed child return means no fabricated completion marker.
-    finally:
-        os.close(lock_fd)
-
-
-DISPATCH_EPILOG = """LANE AND EXECUTOR CONTRACT (the caller-facing detail reference/orchestrator.md
+DISPATCH_EPILOG = """LANE AND DELEGATION CONTRACT (the caller-facing detail reference/orchestrator.md
 points here for; that page keeps the decision and the command line).
 
   Flags. --project selects another target checkout. --adopt records an already matching --branch
@@ -561,25 +247,12 @@ points here for; that page keeps the decision and the command line).
   changes, accessible evidence, the current role source, and every non-dispatch issue comment in
   order.
 
-  CLI run state. This is the only liveness the dispatcher observes: a native handle is the
-  caller's, and the handle recorded on the issue is its evidence. The supervisor's atomic
-  completion marker establishes an observed exit. PIDs are diagnostic; a held supervisor_lock
-  means running; an absent marker with a free or missing lock means lost or unknown, never done.
-  Retain the run directory, brief identity, lock, output, log and marker through lane cleanup.
-  Process exit and prose claims establish neither the PR nor its evidence -- read the output.
-
-  --reconcile-lost preconditions. Originating-host inspection proving that this exact supervisor
-  and executor stopped, plus --reason and --evidence, recorded verbatim, carrying that inspection
-  and its result where they stay readable. It resolves one CLI run without inventing an exit or
-  output; where inspection is unavailable, remain blocked. What the dispatcher itself still
-  refuses is a held supervisor lock or a completion marker, before or during reconciliation: a
-  live or uncertain executor never permits a second writer or cleanup. Re-running it overwrites
-  the same comment, so state the finding you want recorded.
-
-  Native receipts. --implementation claude prepares agent-spawn.json, the Agent-tool instruction:
-  subagent type, model, effort and the complete prompt. The caller passes it to the Agent tool,
-  records the returned handle, and is notified natively. A prepared receipt is not a running
-  worker.
+  Delegation. The dispatcher prepares the lane and writes agent-spawn.json: the bundle tool to
+  call -- `worker` or `reviewer`, with a description, the pointer prompt and run_in_background --
+  or `send_message` with `agent_id` and `message` when --resume continues an existing worker. The
+  child's model and effort are fixed by that tool's row, so no route is carried here. Call the
+  named tool with the recorded arguments, then record the returned child id on the issue; a
+  prepared receipt is not a running child. A shell cannot call a session tool.
 """
 
 
@@ -588,10 +261,6 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('issue', type=int)
     parser.add_argument('--purpose', choices=['worker', 'reviewer'])
-    parser.add_argument('--implementation', choices=['codex', 'claude', 'claude-cli'],
-                        help='codex: Codex CLI process; claude: native Claude Agent; claude-cli: Claude CLI worker')
-    parser.add_argument('--model', help="explicit model override; otherwise use the role's anchored row")
-    parser.add_argument('--effort', help="explicit effort override; otherwise use the role's anchored setting")
     parser.add_argument('--project', type=Path, default=Path.cwd(), help='target checkout, distinct from plugin installation')
     parser.add_argument('--base', help='required named ref for a new lane, normally origin/main; fetch first')
     parser.add_argument('--branch', help='default task/ISSUE-TITLE; existing branch requires --adopt')
@@ -601,34 +270,15 @@ def main():
     parser.add_argument('--continue', dest='continuing', action='store_true')
     parser.add_argument('--adopt', action='store_true', help='record an existing --branch and --worktree with --base; does not launch')
     parser.add_argument('--pr', type=int, help="existing lane PR on the lane's branch (required for merged cleanup)")
-    parser.add_argument('--resume', help='native Claude Agent handle to resume; reviewers are always fresh')
-    parser.add_argument('--reconcile-lost', help='exact recorded brief path; attest authoritative absence of all owned processes')
-    parser.add_argument('--reason', help='reason for explicit lost-run reconciliation')
-    parser.add_argument('--evidence', help='where the originating-host ownership and absence inspection is readable; recorded verbatim')
-    parser.add_argument('--wait', action='store_true', help='CLI only: retain this invocation through observed executor completion')
+    parser.add_argument('--resume', help='existing worker child id to continue with send_message; reviewers are always fresh')
     parser.add_argument('--cleanup', action='store_true')
     parser.add_argument('--discard', action='store_true', help='explicit caller instruction to discard this lane instead of merge')
     args = parser.parse_args()
     require(args.issue > 0, 'issue must be positive')
-    require(not args.wait or (args.implementation in ('codex', 'claude-cli')
-            and not any((args.adopt, args.cleanup, args.reconcile_lost))), '--wait requires CLI dispatch, not native or maintenance actions')
-    require(not (args.implementation == 'claude-cli' and args.purpose == 'reviewer'),
-            'Claude CLI does not provide an enforced read-only reviewer sandbox; use --implementation codex')
-    require(not args.reconcile_lost or not any((args.purpose, args.implementation, args.base, args.branch,
-            args.worktree, args.packet, args.brief, args.continuing, args.adopt, args.pr, args.resume,
-            args.cleanup, args.discard, args.wait, args.model, args.effort)),
-            '--reconcile-lost is a standalone maintenance action')
-    require(not (args.model is not None or args.effort is not None) or not any(
-            (args.adopt, args.cleanup, args.reconcile_lost)), '--model and --effort require executor dispatch')
-    require(args.reconcile_lost or not (args.reason or args.evidence), '--reason and --evidence require --reconcile-lost')
     project = resolved(args.project, 'project')
     require(same_path(git(project, 'rev-parse', '--show-toplevel'), project), '--project must be a checkout root')
     repo = run('gh', 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner', cwd=project)
     issue = issue_view(project, repo, args.issue)
-    if args.reconcile_lost:
-        issue['comments'] = issue_comments(project, repo, args.issue)
-        print(json.dumps(reconcile_lost(args, project, repo, issue), indent=2))
-        return
     # The reviewer's contract slots are filled from these sections, so the parse IS their
     # validation. A worker's packet carries the issue body verbatim and reads no section, so the
     # same parse only refused lanes over their prose (#427).
@@ -640,7 +290,7 @@ def main():
     lane = lanes[-1] if lanes else None
     existing = args.cleanup or args.continuing or args.purpose == 'reviewer'
     require(args.cleanup or args.adopt or args.purpose, '--purpose is required')
-    require(not args.adopt or not any((args.cleanup, args.continuing, args.purpose, args.implementation,
+    require(not args.adopt or not any((args.cleanup, args.continuing, args.purpose,
                                       args.packet, args.brief, args.resume)),
             '--adopt records only; run dispatch, continuation, or cleanup separately')
     require(not args.packet or args.purpose == 'reviewer', '--packet is for reviewers; workers use --brief')
@@ -653,15 +303,6 @@ def main():
             require(value is None or (same_path(value, lane[key]) if key == 'worktree' else value == lane[key]),
                     f'{key} differs from recorded lane')
         lane_check(project, lane)
-        runs = [r for r in history if r.get('kind') == 'run' and r.get('lane_id') == lane['lane_id']]
-        for previous in runs:
-            # A native handle is the caller's own: nothing here can observe it, so the
-            # orchestrator's record on the issue is its evidence and an attestation flag would
-            # only restate it (#427). The CLI check below is the one that keeps a second writer
-            # off a running lane.
-            if previous.get('implementation') in NATIVE_RECORDS:
-                continue
-            require(not alive(previous), 'recorded executor still running; wait for completion')
     else:
         require(not lane or any(r.get('status') == 'cleaned' and r.get('lane_id') == lane['lane_id'] for r in history),
                 'lane exists; use --continue')
@@ -723,8 +364,6 @@ def main():
             publish(project, repo, args.issue, lane, Path(scratch))
         print(json.dumps(lane, indent=2))
         return
-    implementation = args.implementation or 'claude'  # the host's own subagent (#332)
-    require(not args.resume or implementation in NATIVE_IMPLEMENTATIONS, '--resume is only for native workers; CLI executors start fresh')
     if args.continuing:
         require(args.brief, '--continue requires --brief')
         # A delivered lane continues through its open PR; without one, the dispatcher says so on
@@ -757,25 +396,20 @@ def main():
     if args.brief:
         extra = args.brief.read_text().strip()
         require(extra, 'missing brief')
-    model, effort = route_setting(args.purpose, implementation, args.model, args.effort)
-    reviewer_identity = (f'Codex, {model} at {effort}, read-only' if implementation == 'codex'
-                         else f'Claude subagent, {model} at {effort}, read-only')
+    model, effort, route_source = route()
+    # The route is the bundle's one anchor (ADR 0066); say what was read and where, so a run shows
+    # it rather than asking a reader to trust a record field.
+    print(f'dispatch route: {model} at {effort} from {route_source}', file=sys.stderr)
+    reviewer_identity = f'dsh subagent, {model} at {effort}, read-only'
     if args.purpose == 'reviewer':
         require(args.packet, 'reviewer requires --packet with the complete caller-assembled contract')
         role = reviewer_role(args.packet.read_text(), reviewer_identity)
-        if implementation == 'claude':
-            role += pinned_evidence(wt, args.packet.read_text())
+        role += pinned_evidence(wt, args.packet.read_text())
     else:
-        # One contract for every executor: the page carries no template slot, because the packet
-        # already carries the issue, branch, worktree and done-check it used to duplicate, and a
-        # static Claude agent definition cannot fill one (#402, ADR 0060). What differs per
-        # executor is harness mechanics, and only Codex needs them carried here: the Claude
-        # definition body already delivers `reference/harness-claude.md` on both Claude paths
-        # (ADR 0061).
-        role = (ROOT / 'reference/worker.md').read_text()
-        if implementation == 'codex':
-            role += codex_worker_mechanics()
-    identity = f'Codex {model} {effort}' if implementation == 'codex' else f'Claude {model} {effort}'
+        # One contract: the worker's role page arrives as the `worker` tool row's persona, so the
+        # brief carries the packet alone and the page arrives once (#402, #411, ADRs 0060/0061).
+        role = ''
+    identity = f'dsh {model} {effort}'
     packet = f"\n\n# Task packet\nIssue: {issue['url']}\nBranch: {lane['branch']}\nWorktree: {wt}\nNamed base: {lane['base']} ({lane['base_sha']})\nRole references resolve from: {ROOT}\n\n{worker_issue(issue)}\n"
     if pr:
         packet += f"PR: {pr['url']}\n"
@@ -783,22 +417,9 @@ def main():
         packet += ('\n## Continuation brief\n' if args.continuing else '\n## Inputs and expected output\n') + extra + '\n'
     packet += f'\nExecutor: {identity}. Record language: English.\n'
     if args.purpose == 'worker':
-        email = 'noreply@openai.com' if implementation == 'codex' else 'noreply@anthropic.com'
-        packet += f'Commit trailer: Co-Authored-By: {identity} <{email}>\nReturn the PR and evidence to the caller; never merge.\n'
-        if implementation == 'claude-cli':
-            packet += ('Permission policy: Claude acceptEdits with permission prompts disabled, under host permissions. '
-                       'The assigned worktree is your scope; this CLI does not add an independent OS sandbox. '
-                       'If a required action is denied, return the blocker; do not loosen permissions or bypass it.\n')
+        packet += f'Commit trailer: Co-Authored-By: {identity} <noreply@anthropic.com>\nReturn the PR and evidence to the caller; never merge.\n'
     else:
         packet += f'Reviewer identity: {reviewer_identity}. Return the whole verdict to the caller for publication.\n'
-    if implementation == 'codex':
-        require(shutil.which('codex'), 'codex is not installed')
-    if implementation == 'claude-cli':
-        require(shutil.which('claude'), 'claude is not installed')
-        require((ROOT / '.claude-plugin/plugin.json').is_file(), 'Claude plugin manifest is missing')
-        require((ROOT / 'hooks/hooks.json').is_file(), 'Claude plugin hooks are missing')
-    if implementation in ('codex', 'claude-cli'):
-        require((ROOT / 'hooks/pre-tool-use').is_file(), 'repository role hook is missing')
     rebase_continuation = False
     if args.purpose == 'worker' and args.continuing and pr:
         rows = api(f'repos/{repo}/issues/{pr["number"]}/comments?per_page=100', '--paginate')
@@ -811,102 +432,37 @@ def main():
             rebase=base_advanced(repo, pr['baseRefName'], pr['headRefOid']))['rebase']
     # All input and role validation is finished. From here onward writes are deliberate.
     scratch = Path(tempfile.mkdtemp(prefix=f'devstandard-{args.issue}-{args.purpose}-'))
-    # The role rides the agent definition body on BOTH Claude paths — the default `claude`
-    # subagent (#332) and `claude-cli`, which launches `--agent devstandard:worker` below — so
-    # the brief carries the packet alone there and the page arrives exactly once (#411). It rides
-    # the brief only where no definition can carry it: `codex`, and a Claude reviewer, whose judging contract is assembled per review rather than installed.
-    # `--implementation claude-cli --purpose reviewer` is refused above; the purpose is named here
-    # so this condition holds on its own terms.
-    definition_carries_role = (implementation in ('claude', 'claude-cli')
-                               and args.purpose == 'worker')
-    prompt = packet if definition_carries_role else role + packet
-    (scratch / 'brief.txt').write_text(prompt)
+    brief_path = scratch / 'brief.txt'
+    brief_path.write_text(role + packet)
     if not existing:
         git(project, 'worktree', 'add', '-b', lane['branch'], str(wt), lane['base'])
         publish(project, repo, args.issue, lane, scratch)
-    record = dict(lane, kind='run', purpose=args.purpose, implementation=implementation,
-                  model=model, effort=effort, brief=str(scratch / 'brief.txt'), pr=pr['url'] if pr else None,
-                  issue_state=issue['state'].lower())
+    record = dict(lane, kind='run', purpose=args.purpose, model=model, effort=effort,
+                  route_source=str(route_source), brief=str(brief_path),
+                  pr=pr['url'] if pr else None, issue_state=issue['state'].lower())
     if pr_note:
         record['pr_note'] = pr_note
     if rebase_continuation:
         record['continuation'] = 'rebase'
-    if implementation in NATIVE_IMPLEMENTATIONS:
-        instruction = dict(subagent_type=f'devstandard:{args.purpose}', model=model, effort=effort,
-                           description=f"Issue {args.issue} {args.purpose}",
-                           prompt=(f"Read {scratch / 'brief.txt'} IN FULL using Read before judging. "
-                                   "It contains the complete current contract, packet, and pinned Git evidence. "
-                                   "Return the whole verdict to the caller."
-                                   if args.purpose == 'reviewer' else prompt), run_in_background=True)
-        if args.resume:
-            instruction['resume'] = args.resume
-        path = scratch / 'agent-spawn.json'
-        notice = ('Not launched: agent-spawn.json records requested settings. Map supported controls to the Claude Agent tool, '
-                  'then record its returned native handle on the issue. If the tool has no per-spawn effort control, '
-                  'use the matching shipped-role default; a different requested effort is unsupported and must be reported, '
-                  'never silently claimed as applied. A shell cannot invoke the session Agent tool.')
-        path.write_text(json.dumps(instruction, indent=2) + '\n')
-        record.update(status='awaiting-agent-tool', instruction=str(path))
-        record['notice'] = notice
-        publish(project, repo, args.issue, record, scratch)
+    pointer = delegation_pointer(brief_path, args.purpose)
+    if args.resume:
+        # A continuation reaches the same child: `send_message` is the native control tool a
+        # continuable delegation exposes, and the recorded child id is the caller's own evidence.
+        instruction = dict(tool='send_message', agent_id=args.resume, message=pointer)
     else:
-        output = scratch / ('output.jsonl' if implementation == 'claude-cli' else 'output.txt')
-        log, completion, failure = [scratch / name for name in ('process.log', 'exit-code', 'launch-failure')]
-        if implementation == 'claude-cli':
-            command = dict(argv=[shutil.which('claude'), '--print', '--plugin-dir', str(ROOT),
-                '--agent', 'devstandard:worker', '--permission-mode', 'acceptEdits', '--permission-prompts', 'none',
-                '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--model', model, '--effort', effort],
-                cwd=str(wt), stdin=str(scratch / 'brief.txt'), stdout=str(output))
-            record.update(permission_mode='acceptEdits', sandbox='host', output_format='stream-json',
-                          notice='Claude CLI uses host/tool permissions, not an independent OS sandbox. Read all result events and their permission_denials in the raw JSONL output, including earlier results; the last result and process exit alone are not task acceptance. Return a required-action denial as blocked; never bypass it.')
-        else:
-            argv = [shutil.which('codex'), 'exec', '-m', model, '-c', f'model_reasoning_effort={effort}',
-                    '-s', 'workspace-write' if args.purpose == 'worker' else 'read-only', '-C', str(wt)]
-            argv += ['-c', 'features.hooks=true']
-            # Only alongside the fixed role hook from this dispatcher's installation, checked
-            # to exist above. Codex intends the flag for automation that already vets hook sources.
-            argv += ['--dangerously-bypass-hook-trust']
-            if args.purpose == 'worker':
-                argv += ['-c', 'sandbox_workspace_write.network_access=true']  # fetch, push and gh need the network
-                for flag in ('--git-common-dir', '--git-dir'):
-                    argv += ['--add-dir', git(wt, 'rev-parse', '--path-format=absolute', flag)]
-            # Both purposes: the sandbox modes above are what bound a reviewer, not its tools.
-            admitted, mcp_notice = mcp_tool_admission(argv[0])
-            for name in admitted:
-                argv += ['-c', f'mcp_servers.{name}.default_tools_approval_mode="approve"']
-            record['mcp_servers'] = admitted
-            if mcp_notice:
-                record['notice'] = mcp_notice
-            # `-` is the CLI's documented "read the prompt from stdin". A brief is as long as the
-            # issue record it carries, and one over 128 KiB cannot be an argument at all (#454).
-            argv += ['-o', str(output), '-']
-            command = dict(argv=argv, cwd=str(wt), stdin=str(scratch / 'brief.txt'))
-        (scratch / 'command.json').write_text(json.dumps(command))
-        lock = scratch / 'supervisor.lock'
-        with lock.open('x+') as ownership, open(os.devnull) as stdin, log.open('w') as stdout:
-            fcntl.flock(ownership, fcntl.LOCK_EX)
-            process = subprocess.Popen([sys.executable, str(SELF),
-                                        '--supervise', str(scratch), str(ownership.fileno())], cwd=scratch, stdin=stdin,
-                                       pass_fds=(ownership.fileno(),),
-                                       stdout=stdout, stderr=subprocess.STDOUT, start_new_session=True,
-                                       env=dict(os.environ, DEVSTANDARD_ROLE=args.purpose))
-        record.update(status='launched', pid=process.pid, output=str(output), log=str(log),
-                      completion=str(completion), launch_failure=str(failure), supervisor_lock=str(lock))
-        try:
-            publish(project, repo, args.issue, record, scratch)
-        except Exception:
-            process.terminate()  # The CLI has not passed the publication gate.
-            process.wait()
-            raise
-        (scratch / 'launch').touch()
-        if args.wait:
-            record['executor_exit'] = wait_process(process, record)
+        instruction = dict(tool=args.purpose, description=f"Issue {args.issue} {args.purpose}",
+                           prompt=pointer, run_in_background=True)
+    path = scratch / 'agent-spawn.json'
+    path.write_text(json.dumps(instruction, indent=2) + '\n')
+    record.update(status='awaiting-delegation', instruction=str(path))
+    record['notice'] = ('Not launched: agent-spawn.json records the delegation to make. Call the '
+                        'named tool with the recorded arguments, then record the returned child id '
+                        'on the issue. A shell cannot call a session tool.')
+    publish(project, repo, args.issue, record, scratch)
     print(json.dumps(record, indent=2))
 
 
 if __name__ == '__main__':
-    if len(sys.argv) == 4 and sys.argv[1] == '--supervise':
-        sys.exit(supervisor(sys.argv[2], int(sys.argv[3])))
     try:
         main()
     except (Refusal, GuardRefusal, OSError, ValueError) as error:
