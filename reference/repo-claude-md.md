@@ -1,8 +1,8 @@
-# The repo-root `CLAUDE.md`
+# The repo-root instructions file
 
-CI settles the project's commands — capture them while they're fresh: generate a repo-root `CLAUDE.md` — when there is something to put in it (below), as admitted by `reference/in-repo-writes.md` — one page hard max. Claude Code reads it natively at every session start in the repo, so it is the one place operational facts reach every clean-context worker automatically. Three kinds of content — plus one conditional fourth, and nothing else:
+CI settles the project's commands — capture them while they're fresh: generate a repo-root instructions file — when there is something to put in it (below), as admitted by `reference/in-repo-writes.md` — one page hard max. The host reads `AGENTS.md` and `CLAUDE.md` in one chain and injects it per agent, so it is the one place operational facts reach every agent automatically, a dispatched worker included. Write it as `AGENTS.md`; a project that already keeps its instructions in `CLAUDE.md` is read through the same chain and needs no rename. Three kinds of content — plus one conditional fourth, and nothing else:
 
-**`CLAUDE.md` stays the operational-memory file on every harness.** The Claude Code main session and every dispatched worker read it; a Codex worker reads it explicitly (`reference/orchestrator.md` and `reference/worker.md`). Write discoveries back here through the PR. Respect a project's existing `AGENTS.md` instructions, which Codex loads natively, while keeping each operational fact at its established source. Do not duplicate this memory or install a managed method block in `AGENTS.md`.
+**The repo-root instructions file stays the operational-memory file on every harness.** The main session and every dispatched worker read it, because the host injects the chain into each agent (`reference/orchestrator.md` and `reference/worker.md`). Write discoveries back here through the PR, keeping each operational fact at its established source. Do not duplicate this memory or install a managed method block in the chain.
 
 - **Commands** — install, test, run (the same ones CI just encoded);
 - **Environment gotchas** — ports in use, services that must be up, local-vs-CI differences;
@@ -11,12 +11,12 @@ CI settles the project's commands — capture them while they're fresh: generate
 A cache or deploy root outside the tree is an environment gotcha of exactly this kind only when the
 root itself already existed as an authority for this project's files or the human chose it. Recording
 that place relays the authority so a clean-context worker does not invent another
-(`reference/where-it-goes.md`); a `CLAUDE.md` line added in the same change never authorises a root the
-change invented. It belongs under Gotchas, not as a new kind of content.
+(`reference/where-it-goes.md`); an instructions-file line added in the same change never authorises a
+root the change invented. It belongs under Gotchas, not as a new kind of content.
 
 One conditional fourth item — the fence's only exception: a `## Record language` line, when the repo's durable record is not English. It sits here because a clean-context worker must see it natively; the reasoning behind the choice goes in that repo's ADR log, not here. Its absence means English.
 
-A repo-wide language declaration in root `CLAUDE.md` overrides English for the whole record,
+A repo-wide language declaration in the root instructions file overrides English for the whole record,
 never per file or per agent. An established non-English record earns that declaration: write it
 and follow the existing record, never start a mixed record. A human-facing translation is a marked
 mirror naming its canonical file and changes in the same diff as that file.

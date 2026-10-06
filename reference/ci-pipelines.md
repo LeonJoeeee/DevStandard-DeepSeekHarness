@@ -70,7 +70,7 @@ Branch protection is the LAST founding step: `guard protection --apply --check t
 - **"Do not allow bypassing the above settings"** — without it, admins are exempt, and in a solo setup every agent session runs on the owner's admin credentials.
 - Know your plan: on free-plan **private** repos branch protection doesn't apply, so the gate is convention-only there. It binds all the same; the only difference is whether the platform blocks a violation or a reviewer catches it after. `reference/orchestrator.md`'s Branch protection section owns how the guard recognizes GitHub's plan-limit response and records the unavailable server-side gate.
 
-Protection changes only who enforces the ceremony, not the ceremony itself. Use your role page's two-checks paragraph for review and CI, including its bare-version-bump exception; protection does not invent further exceptions. Required status protection makes GitHub enforce the CI portion and nothing else — what it leaves open, and the role guards and reviewed-head merge route that cover it, are in `reference/orchestrator.md`'s Guarded operations section.
+Protection changes only who enforces the ceremony, not the ceremony itself. Use your role page's two-checks paragraph for review and CI, including its bare-version-bump exception; protection does not invent further exceptions. Required status protection makes GitHub enforce the CI portion and nothing else — what it leaves open, and the role hook and reviewed-head merge route that cover it, are in `reference/orchestrator.md`'s Guarded operations section.
 
 ## Pipeline pin upkeep (`.github/dependabot.yml`, generated in the same setup step)
 
@@ -112,7 +112,7 @@ If the project genuinely has no release form yet, generate CI only and record th
 
 Both files land in the target repo under `.github/workflows/`.
 
-The same setup step also generates the repo-root `CLAUDE.md`, when the project has anything to put in it — `reference/repo-claude-md.md` (that file stays the operational memory on every harness). The same founding commit also seeds the in-repo worktree root into `.gitignore` (`/.claude/worktrees/`) — the line every later worktree creation checks for (`reference/orchestrator.md`'s Worktree lifecycle section, Birth).
+The same setup step also generates the repo-root instructions file, when the project has anything to put in it — `reference/repo-claude-md.md` (that file stays the operational memory on every harness). The same founding commit also seeds the in-repo worktree root into `.gitignore` (`/.claude/worktrees/`) — the line every later worktree creation checks for (`reference/orchestrator.md`'s Worktree lifecycle section, Birth).
 
 ## When CI goes red with no change of yours
 

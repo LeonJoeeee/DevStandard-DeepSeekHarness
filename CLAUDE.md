@@ -2,8 +2,8 @@
 
 This file is **repo ops for this repository only**. It is not part of the method: nothing in
 `reference/` points at it, and no seeded project receives it. Like `docs/adr/`
-(below) it is copied into the plugin package, where nothing reads it — Claude Code loads a
-*project's* `CLAUDE.md`, never a plugin's. Everything here is a practice we follow *while
+(below) it is copied into the plugin package, where nothing reads it — the host loads a
+*project's* instructions chain, never a bundle's. Everything here is a practice we follow *while
 building DevStandard*, not a rule DevStandard states.
 
 **Never write the page total.** An ADR or a PR description may state what a change *cost* — ADR
@@ -77,7 +77,7 @@ shipped, so target projects would inherit nothing from it. Quote the count nowhe
 changing, and a stated count is the snapshot-shaped claim the rule above forbids.
 
 ```sh
-# Dispatcher integration checks (real git/processes; GitHub/Codex boundary doubles)
+# Dispatcher integration checks (real git/processes; GitHub boundary doubles)
 python3 .github/test-dispatch.py
 # Review-packet assembly, green-head admission, publication, and round accounting
 python3 .github/test-review-packet.py
@@ -130,13 +130,11 @@ out with no published verdict, the last two after the diagnosis was already writ
 so knowing the rule was never the safeguard, and command 3 above is the pre-merge check that catches
 the omission. What replaced remembering is the machinery: `scripts/review-packet start` reserves the
 round as a PR comment *before* the reviewer runs, so an unpublished verdict is a visible reservation
-rather than nothing at all. On the Codex path, its return handler (synchronous with `start --wait`, detached by default) replaces that reservation
-with `## Merge check 1 — round N` and the unedited verdict when the completion marker arrives; a
-process that dies returning no verdict is recorded as a failed attempt, not a returned one. On the
-Claude path, run the returned Agent instruction and publish the whole result yourself with
-`scripts/review-packet publish --attempt ID --verdict FILE`. Check 1 still runs read-only, and when
-Codex is missing, unauthenticated or erroring, `reference/orchestrator.md`'s "When it is not there"
-governs: another executor only where it keeps the gate's properties, otherwise the gate blocks.
+rather than nothing at all. `start` returns the `reviewer` delegation instruction; publish the whole
+result the child returns with `scripts/review-packet publish --attempt ID --verdict FILE`, which
+replaces the reservation with `## Merge check 1 — round N` and the unedited verdict. Check 1 still
+runs read-only, and when the `reviewer` tool is missing or the child errors,
+`reference/orchestrator.md`'s "When it is not there" governs: the gate blocks rather than lowering.
 **The safeguard is the assembler's round accounting, not anyone reproducing a prompt correctly** —
 which is why `reference/orchestrator.md` forbids a bespoke review prompt outright. Hand invocation
 remains the fallback, and it inherits neither the reservation nor the accounting.

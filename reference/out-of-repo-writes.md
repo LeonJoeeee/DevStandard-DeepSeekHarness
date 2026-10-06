@@ -25,8 +25,8 @@ serve one task or many. In order:
   the exact move that produced this rule). An evictable cache is never the only durable copy of
   material that must be kept;
 - else, material that dies with the task goes to scratch; for material that must be kept, use the
-  cache root the repo's `CLAUDE.md` relays (`reference/repo-claude-md.md`) — a relay counts only for a
-  root the authority clause already admits, so read that clause before treating a `CLAUDE.md` line as
+  cache root the repo's instructions file relays (`reference/repo-claude-md.md`) — a relay counts only for a
+  root the authority clause already admits, so read that clause before treating an instructions-file line as
   the answer;
 - else, where the entry-point rule has established that the write belongs outside the project,
   **stop and tell the main session** (a worker) or **ask the human** (the main session). Never an
@@ -36,22 +36,17 @@ serve one task or many. In order:
 **2. A deploy root or runtime state** — where a service the project runs keeps its files. The
 location is the project's call, decided by the authority clause (`reference/where-it-goes.md`) like
 any other destination. What this kind adds is that the root is **documented in that repo's
-`CLAUDE.md` or architecture doc before anything lands there**, and that a declared root also says
+instructions file or architecture doc before anything lands there**, and that a declared root also says
 what it retains — which copies are removed and when — because naming the place fixes where things
 go, not how many pile up: a documented `~/services` still grew fourteen release directories and a
 multi-gigabyte rehearsal leftover.
 
 **3. Scratch, drops, and task-local deliverables** — session-local, gone when the session is; release
 deliverables are not this kind. Write to the
-scratch the session gives you — the location your harness provides: on Claude Code,
-`$CLAUDE_JOB_DIR/tmp` or the scratchpad it names; on a harness that names none (a dispatched Codex
-CLI process), one dedicated `mktemp -d` directory per task. Post any durable result to the issue, PR, or
+scratch the session gives you — the location your harness names, or, where it names none, one dedicated `mktemp -d` directory per task. Post any durable result to the issue, PR, or
 other destination the placement rule chose. Dispatcher lifecycle scratch
-stays until lane cleanup under `reference/orchestrator.md`'s Dispatching to an executor section. A process-invoked worker follows the scratch binding in `reference/worker.md`; it does not
+stays until lane cleanup under `reference/orchestrator.md`'s Dispatching to an executor section. A dispatched worker follows the scratch binding in `reference/worker.md`; it does not
 assume the invoking session's scratch is writable.
-A Codex `-o` result is a dies-with-the-task file: the CLI, outside the
-agent's sandbox, writes it into the dispatcher's session scratch as `reference/orchestrator.md`'s Dispatching to an executor
-section prescribes.
 The human's Desktop and `$HOME` are never a drop target unless the human names one: showing them a
 result is what the PR, the issue, and the conversation are for.
 
